@@ -1,0 +1,89 @@
+use std::path::PathBuf;
+
+use crate::app_config::AppType;
+use crate::codex_config::get_codex_auth_path;
+use crate::config::get_claude_settings_path;
+use crate::error::AppError;
+use crate::gemini_config::get_gemini_dir;
+use crate::openclaw_config::get_openclaw_dir;
+use crate::opencode_config::get_opencode_dir;
+
+/// 返回指定应用所使用的提示词文件路径。
+pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
+    if matches!(app, AppType::ClaudeDesktop) {
+        return Err(AppError::localized(
+            "app.prompts_unsupported",
+            "当前应用暂不支持 Prompts",
+            "This app does not support Prompts",
+        ));
+    }
+
+    let base_dir: PathBuf = match app {
+        AppType::Claude => get_base_dir_with_fallback(get_claude_settings_path(), ".claude")?,
+        AppType::Codex => get_base_dir_with_fallback(get_codex_auth_path(), ".codex")?,
+        AppType::Gemini => get_gemini_dir(),
+        AppType::GrokBuild => crate::grok_config::get_grok_config_dir(),
+        AppType::OpenCode => get_opencode_dir(),
+        AppType::OpenClaw => get_openclaw_dir(),
+        AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+        AppType::Pi => crate::pi_config::get_pi_agent_dir()?,
+        AppType::Omp => crate::config::get_home_dir().join(".omp").join("agent"),
+        AppType::ClaudeDesktop => unreachable!("handled above"),
+    };
+
+    let filename = match app {
+        AppType::Claude => "CLAUDE.md",
+        AppType::Codex => "AGENTS.md",
+        AppType::Gemini => "GEMINI.md",
+        AppType::GrokBuild | AppType::OpenCode | AppType::OpenClaw => "AGENTS.md",
+        AppType::Hermes => "SOUL.md",
+        // omp 与 Pi 同源（pi 分支）：AGENTS.md 约定一致，
+        // 且 omp --append-system-prompt 支持文件内容。
+        AppType::Pi | AppType::Omp => "AGENTS.md",
+        AppType::ClaudeDesktop => unreachable!("handled above"),
+    };
+
+    Ok(base_dir.join(filename))
+}
+
+fn get_base_dir_with_fallback(
+    primary_path: PathBuf,
+    fallback_dir: &str,
+) -> Result<PathBuf, AppError> {
+    primary_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .or_else(|| dirs::home_dir().map(|h| h.join(fallback_dir)))
+        .ok_or_else(|| {
+            AppError::localized(
+                "home_dir_not_found",
+                format!("无法确定 {fallback_dir} 配置目录：用户主目录不存在"),
+                format!("Cannot determine {fallback_dir} config directory: user home not found"),
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hermes_prompt_file_uses_soul_md() {
+        let path = prompt_file_path(&AppType::Hermes).expect("Hermes prompt path");
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("SOUL.md")
+        );
+    }
+
+    #[test]
+    fn pi_prompt_file_uses_agents_md() {
+        let path = prompt_file_path(&AppType::Pi).expect("Pi prompt path");
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("AGENTS.md")
+        );
+    }
+}

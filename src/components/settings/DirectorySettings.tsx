@@ -1,0 +1,175 @@
+import { useMemo } from "react";
+import { FolderSearch, Undo2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
+import type { AppId } from "@/lib/api";
+import type { ResolvedDirectories } from "@/hooks/useSettings";
+
+type DirectoryAppId = Exclude<AppId, "claude-desktop" | "omp">;
+
+interface DirectorySettingsProps {
+  appConfigDir?: string;
+  resolvedDirs: ResolvedDirectories;
+  onAppConfigChange: (value?: string) => void;
+  onBrowseAppConfig: () => Promise<void>;
+  onResetAppConfig: () => Promise<void>;
+  grokDir?: string;
+  opencodeDir?: string;
+  openclawDir?: string;
+  hermesDir?: string;
+  piDir?: string;
+  onDirectoryChange: (app: DirectoryAppId, value?: string) => void;
+  onBrowseDirectory: (app: DirectoryAppId) => Promise<void>;
+  onResetDirectory: (app: DirectoryAppId) => Promise<void>;
+}
+
+export function DirectorySettings({
+  appConfigDir,
+  resolvedDirs,
+  onAppConfigChange,
+  onBrowseAppConfig,
+  onResetAppConfig,
+  grokDir,
+  onDirectoryChange,
+  onBrowseDirectory,
+  onResetDirectory,
+}: DirectorySettingsProps) {
+  const { t } = useTranslation();
+
+  return (
+    <div className="space-y-6">
+      {/* OGG Switch 配置目录 - 独立区块 */}
+      <section className="space-y-4">
+        <header className="space-y-1">
+          <h3 className="text-sm font-medium">{t("settings.appConfigDir")}</h3>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.appConfigDirDescription")}
+          </p>
+        </header>
+
+        <div className="flex items-center gap-2">
+          <Input
+            value={appConfigDir ?? resolvedDirs.appConfig ?? ""}
+            placeholder={t("settings.browsePlaceholderApp")}
+            className="text-xs"
+            onChange={(event) => onAppConfigChange(event.target.value)}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={onBrowseAppConfig}
+            title={t("settings.browseDirectory")}
+          >
+            <FolderSearch className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={onResetAppConfig}
+            title={t("settings.resetDefault")}
+          >
+            <Undo2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </section>
+
+      {/* 各应用配置目录覆盖（当前渲染 Grok Build；其余应用目录暂未暴露） */}
+      <section className="space-y-4">
+        <header className="space-y-1">
+          <h3 className="text-sm font-medium">
+            {t("settings.configDirectoryOverride")}
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.configDirectoryDescription")}
+          </p>
+        </header>
+
+
+
+
+        <DirectoryInput
+          label={t("settings.grokConfigDir")}
+          description={undefined}
+          value={grokDir}
+          resolvedValue={resolvedDirs.grokbuild}
+          placeholder={t("settings.browsePlaceholderGrok")}
+          onChange={(val) => onDirectoryChange("grokbuild", val)}
+          onBrowse={() => onBrowseDirectory("grokbuild")}
+          onReset={() => onResetDirectory("grokbuild")}
+        />
+
+
+
+
+      </section>
+    </div>
+  );
+}
+
+interface DirectoryInputProps {
+  label: string;
+  description?: string;
+  value?: string;
+  resolvedValue: string;
+  placeholder?: string;
+  onChange: (value?: string) => void;
+  onBrowse: () => Promise<void>;
+  onReset: () => Promise<void>;
+}
+
+function DirectoryInput({
+  label,
+  description,
+  value,
+  resolvedValue,
+  placeholder,
+  onChange,
+  onBrowse,
+  onReset,
+}: DirectoryInputProps) {
+  const { t } = useTranslation();
+  const displayValue = useMemo(
+    () => value ?? resolvedValue ?? "",
+    [value, resolvedValue],
+  );
+
+  return (
+    <div className="space-y-1.5">
+      <div className="space-y-1">
+        <p className="text-xs font-medium text-foreground">{label}</p>
+        {description ? (
+          <p className="text-xs text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+      <div className="flex items-center gap-2">
+        <Input
+          value={displayValue}
+          placeholder={placeholder}
+          className="text-xs"
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={onBrowse}
+          title={t("settings.browseDirectory")}
+        >
+          <FolderSearch className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={onReset}
+          title={t("settings.resetDefault")}
+        >
+          <Undo2 className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}

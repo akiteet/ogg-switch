@@ -1,0 +1,1880 @@
+//! 托盘菜单管理模块
+//!
+//! 负责系统托盘图标和菜单的创建、更新和事件处理。
+
+use once_cell::sync::Lazy;
+use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, Submenu, SubmenuBuilder};
+use tauri::{Emitter, Manager};
+use tauri_plugin_opener::OpenerExt;
+
+use crate::app_config::AppType;
+use crate::error::AppError;
+use crate::services::usage_cache::UsageCache;
+use crate::store::AppState;
+
+const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
+const H_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_FIVE_HOUR];
+const W_TIER_NAMES: &[&str] = &[
+    crate::services::subscription::TIER_WEEKLY_LIMIT,
+    crate::services::subscription::TIER_SEVEN_DAY,
+    crate::services::subscription::TIER_SEVEN_DAY_OPUS,
+    crate::services::subscription::TIER_SEVEN_DAY_SONNET,
+];
+// Fable 单列显示，不能被周分组的最大值合并掉。
+const FABLE_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_SEVEN_DAY_FABLE];
+// 月窗口分组：火山方舟 Agent/Coding Plan 的月窗口（5h/周/月 三档），
+// 以及 Codex 免费方案的 30 天窗口（#3651）——两者都归入 "m" 档，避免免费
+// Codex 账号在托盘里空白（前端 footer 能看到、托盘却不显示的不对称）。
+const M_TIER_NAMES: &[&str] = &[
+    crate::services::subscription::TIER_MONTHLY,
+    crate::services::subscription::TIER_THIRTY_DAY,
+];
+// Grok credit 额度的兜底窗口（重置距离能识别为周/月时归入 w/m 组）
+const CREDITS_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_CREDITS];
+const GEMINI_PRO_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_PRO];
+const GEMINI_FLASH_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_FLASH];
+const GEMINI_FLASH_LITE_TIER_NAMES: &[&str] =
+    &[crate::services::subscription::TIER_GEMINI_FLASH_LITE];
+const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
+    ("h", H_TIER_NAMES),
+    ("w", W_TIER_NAMES),
+    ("Fable", FABLE_TIER_NAMES),
+    ("m", M_TIER_NAMES),
+    ("c", CREDITS_TIER_NAMES),
+    ("p", GEMINI_PRO_TIER_NAMES),
+    ("f", GEMINI_FLASH_TIER_NAMES),
+    ("l", GEMINI_FLASH_LITE_TIER_NAMES),
+];
+
+/// 每个 app 分区的子菜单句柄，用于 usage 更新时就地改 label 而非整菜单重建。
+/// `create_tray_menu` 每次重建都会整表覆盖写入，保证句柄始终指向当前活跃菜单。
+static TRAY_SECTION_SUBMENUS: Lazy<
+    std::sync::Mutex<std::collections::HashMap<AppType, Submenu<tauri::Wry>>>,
+> = Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// 托盘菜单文本（国际化）
+#[derive(Clone, Copy)]
+pub struct TrayTexts {
+    pub show_main: &'static str,
+    pub open_website: &'static str,
+    pub no_providers_label: &'static str,
+    pub lightweight_mode: &'static str,
+    pub quit: &'static str,
+    pub _auto_label: &'static str,
+    pub projects_label: &'static str,
+    pub no_project_label: &'static str,
+}
+
+/// 将系统区域标识映射为托盘支持的语言码。
+///
+/// 镜像前端 `i18n/getInitialLanguage` 的判定顺序，确保首次安装
+/// （`settings.language` 尚未写入）时托盘语言与界面语言一致：
+/// 繁中系统（zh-TW/HK/MO/Hant）→ `zh-TW`，其余 zh → `zh`，
+/// 日文 → `ja`，英文 → `en`，未知区域回退到 `zh`（与前端默认一致）。
+fn map_locale_to_tray_language(locale: &str) -> &'static str {
+    let locale = locale.to_lowercase();
+    if locale == "zh" {
+        "zh"
+    } else if locale.starts_with("zh-tw")
+        || locale.starts_with("zh-hk")
+        || locale.starts_with("zh-mo")
+        || locale.starts_with("zh-hant")
+    {
+        "zh-TW"
+    } else if locale.starts_with("zh") {
+        "zh"
+    } else if locale.starts_with("ja") {
+        "ja"
+    } else if locale.starts_with("en") {
+        "en"
+    } else {
+        "zh"
+    }
+}
+
+/// 读取系统区域并映射为托盘语言码；取不到区域时回退到 `zh`。
+fn detect_system_tray_language() -> &'static str {
+    sys_locale::get_locale()
+        .as_deref()
+        .map(map_locale_to_tray_language)
+        .unwrap_or("zh")
+}
+
+impl TrayTexts {
+    pub fn from_language(language: &str) -> Self {
+        match language {
+            "en" => Self {
+                show_main: "Open main window",
+                open_website: "Open Official Website",
+                no_providers_label: "(no providers)",
+                lightweight_mode: "Lightweight Mode",
+                quit: "Quit",
+                _auto_label: "Auto (Failover)",
+                projects_label: "Projects",
+                no_project_label: "No project",
+            },
+            "ja" => Self {
+                show_main: "メインウィンドウを開く",
+                open_website: "公式サイトを開く",
+                no_providers_label: "(プロバイダーなし)",
+                lightweight_mode: "軽量モード",
+                quit: "終了",
+                _auto_label: "自動 (フェイルオーバー)",
+                projects_label: "プロジェクト",
+                no_project_label: "プロジェクトを使用しない",
+            },
+            "zh-TW" => Self {
+                show_main: "開啟主介面",
+                open_website: "開啟官方網站",
+                no_providers_label: "(無供應商)",
+                lightweight_mode: "輕量模式",
+                quit: "退出",
+                _auto_label: "自動 (故障轉移)",
+                projects_label: "專案",
+                no_project_label: "不使用專案",
+            },
+            _ => Self {
+                show_main: "打开主界面",
+                open_website: "打开官方网站",
+                no_providers_label: "(无供应商)",
+                lightweight_mode: "轻量模式",
+                quit: "退出",
+                _auto_label: "自动 (故障转移)",
+                projects_label: "项目",
+                no_project_label: "不使用项目",
+            },
+        }
+    }
+}
+
+/// 托盘应用分区配置
+pub struct TrayAppSection {
+    pub app_type: AppType,
+    pub prefix: &'static str,
+    pub empty_id: &'static str,
+    pub header_label: &'static str,
+    pub log_name: &'static str,
+}
+
+/// Auto 菜单项后缀
+pub const AUTO_SUFFIX: &str = "auto";
+pub const TRAY_ID: &str = "ogg-switch";
+
+pub const TRAY_SECTIONS: [TrayAppSection; 4] = [
+    TrayAppSection {
+        app_type: AppType::Claude,
+        prefix: "claude_",
+        empty_id: "claude_empty",
+        header_label: "Claude",
+        log_name: "Claude",
+    },
+    TrayAppSection {
+        app_type: AppType::Codex,
+        prefix: "codex_",
+        empty_id: "codex_empty",
+        header_label: "Codex",
+        log_name: "Codex",
+    },
+    TrayAppSection {
+        app_type: AppType::Gemini,
+        prefix: "gemini_",
+        empty_id: "gemini_empty",
+        header_label: "Gemini",
+        log_name: "Gemini",
+    },
+    TrayAppSection {
+        app_type: AppType::GrokBuild,
+        prefix: "grokbuild_",
+        empty_id: "grokbuild_empty",
+        header_label: "Grok Build",
+        log_name: "Grok Build",
+    },
+];
+
+/// 配色阈值（与前端 `utilizationColor` 语义一致）。
+const UTIL_WARN_PCT: f64 = 70.0;
+const UTIL_DANGER_PCT: f64 = 90.0;
+
+fn emoji_for_utilization(pct: f64) -> &'static str {
+    if pct >= UTIL_DANGER_PCT {
+        "\u{1F534}" // 🔴
+    } else if pct >= UTIL_WARN_PCT {
+        "\u{1F7E0}" // 🟠
+    } else {
+        "\u{1F7E2}" // 🟢
+    }
+}
+
+fn format_subscription_summary(
+    quota: &crate::services::subscription::SubscriptionQuota,
+) -> Option<String> {
+    if !quota.success {
+        return None;
+    }
+
+    let entries: Vec<(&str, f64)> = quota
+        .tiers
+        .iter()
+        .map(|tier| (tier.name.as_str(), tier.utilization))
+        .collect();
+    let parts = labeled_tier_parts(&entries);
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    // 色标取所有已选 tier 里最高的利用率——用户更关心"离上限多近"。
+    let worst = parts
+        .iter()
+        .map(|(_, u)| *u)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !worst.is_finite() {
+        return None;
+    }
+
+    let emoji = emoji_for_utilization(worst);
+    let body = parts
+        .iter()
+        .map(|(label, u)| format!("{label}{}%", u.round() as i64))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!("{emoji} {body}"))
+}
+
+fn labeled_tier_parts(entries: &[(&str, f64)]) -> Vec<(&'static str, f64)> {
+    let mut parts = Vec::new();
+    for &(label, tier_names) in TIER_LABEL_GROUPS {
+        let max_utilization = entries
+            .iter()
+            .filter(|(name, _)| tier_names.contains(name))
+            .map(|(_, utilization)| *utilization)
+            .filter(|utilization| utilization.is_finite())
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(utilization) = max_utilization {
+            parts.push((label, utilization));
+        }
+    }
+    parts
+}
+
+fn tier_pct(data: &crate::provider::UsageData) -> Option<f64> {
+    match (data.used, data.total) {
+        (Some(used), Some(total)) if total > 0.0 => Some(used / total * 100.0),
+        _ => None,
+    }
+}
+
+fn format_script_summary(result: &crate::provider::UsageResult) -> Option<String> {
+    if !result.success {
+        return None;
+    }
+    let data = result.data.as_ref()?;
+    if data.is_empty() {
+        return None;
+    }
+
+    // commands::provider 的 token_plan / official_subscription 分支都会把
+    // SubscriptionQuota 的每个 tier 扁平化为一条 UsageData（plan_name 承载
+    // tier 名），所以这里按 plan_name 恢复托盘短标签。其余 usage 结果
+    //（Copilot / balance / 自定义脚本）走 fallback。
+    let entries: Vec<(&str, f64)> = data
+        .iter()
+        .filter_map(|d| Some((d.plan_name.as_deref()?, tier_pct(d)?)))
+        .collect();
+    let parts = labeled_tier_parts(&entries);
+    if !parts.is_empty() {
+        let worst = parts
+            .iter()
+            .map(|(_, u)| *u)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let emoji = emoji_for_utilization(worst);
+        let body = parts
+            .iter()
+            .map(|(label, u)| format!("{label}{}%", u.round() as i64))
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Some(format!("{emoji} {body}"));
+    }
+
+    let first = data.first()?;
+    let pct = tier_pct(first)?;
+    let emoji = emoji_for_utilization(pct);
+    let plan = first.plan_name.as_deref().unwrap_or("");
+    let rounded = pct.round() as i64;
+    if plan.is_empty() {
+        Some(format!("{} {}%", emoji, rounded))
+    } else {
+        Some(format!("{} {} {}%", emoji, plan, rounded))
+    }
+}
+
+fn managed_codex_account_id(provider: &crate::provider::Provider) -> Option<String> {
+    if crate::proxy::providers::is_codex_official_provider(provider) {
+        return provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.managed_account_id_for("codex_oauth"))
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty());
+    }
+    None
+}
+
+fn provider_uses_official_subscription(provider: &crate::provider::Provider) -> bool {
+    // Managed Codex uses the account-scoped path in tray_usage_source instead
+    // of the CLI's app-wide subscription cache.
+    if managed_codex_account_id(provider).is_some() {
+        return false;
+    }
+
+    provider
+        .meta
+        .as_ref()
+        .and_then(|m| m.usage_script.as_ref())
+        .map(|script| {
+            script.enabled
+                && script.template_type.as_deref() == Some(TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION)
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TrayUsageSource {
+    ManagedCodex(String),
+    Script,
+}
+
+/// Keep the tray's refresh and display paths on the same credentials and toggle.
+fn tray_usage_source(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+) -> Option<TrayUsageSource> {
+    if *app_type == AppType::Codex {
+        if let Some(account_id) = managed_codex_account_id(provider) {
+            // Match ProviderCard: managed accounts query by default until the
+            // user explicitly disables usage, including older saved providers.
+            let enabled = provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.usage_script.as_ref())
+                .map(|script| script.enabled)
+                .unwrap_or(true);
+            return enabled.then_some(TrayUsageSource::ManagedCodex(account_id));
+        }
+    }
+    (provider.has_usage_script_enabled()
+        && (provider.category.as_deref() != Some("official")
+            || provider_uses_official_subscription(provider)))
+    .then_some(TrayUsageSource::Script)
+}
+
+fn format_usage_suffix(
+    usage_cache: &UsageCache,
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+    provider_id: &str,
+) -> Option<String> {
+    // 当前脚本是否启用：禁用/删除时不再沿用旧 UsageCache 结果，
+    // 并顺手 invalidate，防止后续重建继续命中过期数据。
+    let source = tray_usage_source(app_type, provider);
+    if let Some(TrayUsageSource::ManagedCodex(account_id)) = &source {
+        // No fallback: a missing account snapshot must not display another
+        // account's quota from a provider cache or the CLI subscription cache.
+        return usage_cache
+            .with_codex_oauth(account_id, format_subscription_summary)
+            .flatten()
+            .map(|s| format!(" · {s}"));
+    }
+    if source.is_some() {
+        // 脚本缓存优先（覆盖 Copilot/coding_plan/balance/自定义脚本），借用访问避免克隆整条 UsageResult。
+        if let Some(Some(s)) = usage_cache.with_script(app_type, provider_id, format_script_summary)
+        {
+            return Some(format!(" · {s}"));
+        }
+        if provider_uses_official_subscription(provider) {
+            if let Some(Some(s)) =
+                usage_cache.with_subscription(app_type, format_subscription_summary)
+            {
+                return Some(format!(" · {s}"));
+            }
+        }
+    } else {
+        usage_cache.invalidate_script(app_type, provider_id);
+    }
+
+    if !provider_uses_official_subscription(provider) {
+        usage_cache.invalidate_subscription(app_type);
+    }
+    None
+}
+
+/// 对供应商列表排序：sort_index → created_at → name
+fn sort_providers(
+    providers: &indexmap::IndexMap<String, crate::provider::Provider>,
+) -> Vec<(&String, &crate::provider::Provider)> {
+    let mut sorted: Vec<_> = providers.iter().collect();
+    sorted.sort_by(|(_, a), (_, b)| {
+        match (a.sort_index, b.sort_index) {
+            (Some(idx_a), Some(idx_b)) => return idx_a.cmp(&idx_b),
+            (Some(_), None) => return std::cmp::Ordering::Less,
+            (None, Some(_)) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+
+        match (a.created_at, b.created_at) {
+            (Some(time_a), Some(time_b)) => return time_a.cmp(&time_b),
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            _ => {}
+        }
+
+        a.name.cmp(&b.name)
+    });
+    sorted
+}
+
+/// 处理项目 Profile 托盘事件，返回是否已处理
+///
+/// 事件 id 形如 `profile_<scope>_<uuid>`（同一项目在各分组子菜单里各有一项，
+/// 应用时只作用于该分组）；`profile_none_<scope>` 表示某分组"不使用项目"
+/// （只清该分组标记，不动配置）。
+pub fn handle_profile_tray_event(app: &tauri::AppHandle, event_id: &str) -> bool {
+    let Some(suffix) = event_id.strip_prefix("profile_") else {
+        return false;
+    };
+
+    if let Some(scope_str) = suffix.strip_prefix("none_") {
+        let Ok(scope) = crate::services::profile::ProfileScope::parse(scope_str) else {
+            log::error!("未知的项目分组托盘事件: {event_id}");
+            return true;
+        };
+        if let Some(app_state) = app.try_state::<AppState>() {
+            if let Err(e) = app_state.db.set_current_profile_id(scope.as_str(), None) {
+                log::error!("清除当前项目失败: {e}");
+            }
+        }
+        // 通知主窗口刷新（profileId=null 表示该分组已清除当前项目）
+        if let Err(e) = app.emit(
+            "profile-applied",
+            serde_json::json!({ "profileId": null, "scope": scope.as_str() }),
+        ) {
+            log::error!("发射 profile-applied 事件失败: {e}");
+        }
+        refresh_tray_menu(app);
+        return true;
+    }
+
+    // scope 是固定枚举字符串（不含下划线），uuid 只含连字符，首个下划线即分界
+    let Some((scope_str, profile_id)) = suffix.split_once('_') else {
+        log::error!("无法解析项目托盘事件: {event_id}");
+        return true;
+    };
+    let Ok(scope) = crate::services::profile::ProfileScope::parse(scope_str) else {
+        log::error!("未知的项目分组托盘事件: {event_id}");
+        return true;
+    };
+
+    log::info!("应用项目: {profile_id}（{scope_str} 组）");
+    let app_handle = app.clone();
+    let profile_id = profile_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(app_state) = app_handle.try_state::<AppState>() else {
+            return;
+        };
+        match crate::services::profile::ProfileService::apply(app_state.inner(), &profile_id, scope)
+        {
+            Ok((warnings, should_stop_proxy)) => {
+                for warning in &warnings {
+                    log::warn!("[Profile] 应用项目 {profile_id} 警告: {warning}");
+                }
+
+                if should_stop_proxy {
+                    let app_handle2 = app_handle.clone();
+                    let proxy_service = app_state.proxy_service.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = proxy_service.stop().await {
+                            log::warn!("托盘切换项目后停止代理服务失败: {e}");
+                        }
+                        if let Some(state) = app_handle2.try_state::<AppState>() {
+                            crate::commands::emit_profile_apply_events(
+                                &app_handle2,
+                                state.inner(),
+                                &profile_id,
+                                scope,
+                            );
+                        }
+                    });
+                } else {
+                    crate::commands::emit_profile_apply_events(
+                        &app_handle,
+                        app_state.inner(),
+                        &profile_id,
+                        scope,
+                    );
+                }
+            }
+            Err(e) => {
+                log::error!("应用项目 {profile_id} 失败: {e}");
+                refresh_tray_menu(&app_handle);
+            }
+        }
+    });
+    true
+}
+
+/// 处理供应商托盘事件
+pub fn handle_provider_tray_event(app: &tauri::AppHandle, event_id: &str) -> bool {
+    // Oh My Pi 分区：omp_ 前缀。OMP 不在 TRAY_SECTIONS/AppType 体系内
+    //（无 SQLite 供应商表，当前供应商由 modelRoles.default 决定），单独分支。
+    if let Some(provider_id) = event_id.strip_prefix("omp_") {
+        log::info!("切换到 Oh My Pi 默认供应商: {provider_id}");
+        let app_handle = app.clone();
+        let provider_id = provider_id.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            match crate::commands::omp_set_default_provider(&provider_id) {
+                Ok(()) => refresh_tray_menu(&app_handle),
+                Err(e) => log::error!("切换 Oh My Pi 供应商失败: {e}"),
+            }
+        });
+        return true;
+    }
+
+    for section in TRAY_SECTIONS.iter() {
+        if let Some(suffix) = event_id.strip_prefix(section.prefix) {
+            // 处理 Auto 点击
+            if suffix == AUTO_SUFFIX {
+                log::info!("切换到{} Auto模式", section.log_name);
+                let app_handle = app.clone();
+                let app_type = section.app_type.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(e) = handle_auto_click(&app_handle, &app_type) {
+                        log::error!("切换{}Auto模式失败: {e}", section.log_name);
+                    }
+                });
+                return true;
+            }
+
+            // 处理供应商点击
+            log::info!("切换到{}供应商: {suffix}", section.log_name);
+            let app_handle = app.clone();
+            let provider_id = suffix.to_string();
+            let app_type = section.app_type.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(e) = handle_provider_click(&app_handle, &app_type, &provider_id) {
+                    log::error!("切换{}供应商失败: {e}", section.log_name);
+                }
+            });
+            return true;
+        }
+    }
+    false
+}
+
+/// 处理 Auto 点击：启用 proxy 和 auto_failover
+fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), AppError> {
+    if let Some(app_state) = app.try_state::<AppState>() {
+        let app_type_str = app_type.as_str();
+
+        // 强一致语义：Auto 模式开启后立即切到队列 P1（P1→P2→...）
+        // 若队列为空，则尝试把“当前供应商”自动加入队列作为 P1，避免用户陷入无法开启的死锁。
+        let all_providers = app_state.db.get_all_providers(app_type_str)?;
+        let mut queue = app_state
+            .db
+            .get_failover_queue(app_type_str)?
+            .into_iter()
+            .filter(|item| {
+                all_providers
+                    .get(&item.provider_id)
+                    .is_some_and(|provider| {
+                        crate::proxy::provider_router::provider_supports_failover(
+                            app_type_str,
+                            provider,
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        if queue.is_empty() {
+            let current_id =
+                crate::settings::get_effective_current_provider(&app_state.db, app_type)?;
+            let Some(current_id) = current_id else {
+                return Err(AppError::Message(
+                    "故障转移队列为空，且未设置当前供应商，无法启用 Auto 模式".to_string(),
+                ));
+            };
+            let current = app_state
+                .db
+                .get_provider_by_id(&current_id, app_type_str)?
+                .ok_or_else(|| AppError::Message(format!("供应商不存在: {current_id}")))?;
+            if !crate::proxy::provider_router::provider_supports_failover(app_type_str, &current) {
+                return Err(AppError::Message(
+                    "Codex Official 账号卡不支持自动故障转移".to_string(),
+                ));
+            }
+            app_state
+                .db
+                .add_to_failover_queue(app_type_str, &current_id)?;
+            queue = app_state
+                .db
+                .get_failover_queue(app_type_str)?
+                .into_iter()
+                .filter(|item| {
+                    all_providers
+                        .get(&item.provider_id)
+                        .is_some_and(|provider| {
+                            crate::proxy::provider_router::provider_supports_failover(
+                                app_type_str,
+                                provider,
+                            )
+                        })
+                })
+                .collect();
+        }
+
+        let p1_provider_id = queue
+            .first()
+            .map(|item| item.provider_id.clone())
+            .ok_or_else(|| AppError::Message("故障转移队列为空，无法启用 Auto 模式".to_string()))?;
+
+        // 真正启用 failover：启动代理服务 + 执行接管 + 开启 auto_failover
+        let proxy_service = &app_state.proxy_service;
+
+        // 1) 确保代理服务运行（会自动设置 proxy_enabled = true）
+        let is_running = futures::executor::block_on(proxy_service.is_running());
+        if !is_running {
+            log::info!("[Tray] Auto 模式：启动代理服务");
+            if let Err(e) = futures::executor::block_on(proxy_service.start()) {
+                log::error!("[Tray] 启动代理服务失败: {e}");
+                return Err(AppError::Message(format!("启动代理服务失败: {e}")));
+            }
+        }
+
+        // 2) 执行 Live 配置接管（确保该 app 被代理接管）
+        log::info!("[Tray] Auto 模式：对 {app_type_str} 执行接管");
+        if let Err(e) =
+            futures::executor::block_on(proxy_service.set_takeover_for_app(app_type_str, true))
+        {
+            log::error!("[Tray] 执行接管失败: {e}");
+            return Err(AppError::Message(format!("执行接管失败: {e}")));
+        }
+
+        // 3) 设置 auto_failover_enabled = true
+        app_state
+            .db
+            .set_proxy_flags_sync(app_type_str, true, true)?;
+
+        // 3.1) 立即切到队列 P1（热切换：不写 Live，仅更新 DB/settings/备份）
+        if let Err(e) = futures::executor::block_on(
+            proxy_service.switch_proxy_target(app_type_str, &p1_provider_id),
+        ) {
+            log::error!("[Tray] Auto 模式切换到队列 P1 失败: {e}");
+            return Err(AppError::Message(format!(
+                "Auto 模式切换到队列 P1 失败: {e}"
+            )));
+        }
+
+        // 4) 更新托盘菜单
+        if let Ok(new_menu) = create_tray_menu(app, app_state.inner()) {
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                let _ = tray.set_menu(Some(new_menu));
+            }
+        }
+
+        // 5) 发射事件到前端
+        let event_data = serde_json::json!({
+            "appType": app_type_str,
+            "proxyEnabled": true,
+            "autoFailoverEnabled": true,
+            "providerId": p1_provider_id
+        });
+        if let Err(e) = app.emit("proxy-flags-changed", event_data.clone()) {
+            log::error!("发射 proxy-flags-changed 事件失败: {e}");
+        }
+        // 发射 provider-switched 事件（保持向后兼容，Auto 切换也算一种切换）
+        if let Err(e) = app.emit("provider-switched", event_data) {
+            log::error!("发射 provider-switched 事件失败: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// 处理供应商点击：关闭 auto_failover + 切换供应商
+fn handle_provider_click(
+    app: &tauri::AppHandle,
+    app_type: &AppType,
+    provider_id: &str,
+) -> Result<(), AppError> {
+    if let Some(app_state) = app.try_state::<AppState>() {
+        let app_type_str = app_type.as_str();
+
+        // 获取当前 proxy 状态，保持 enabled 不变，只关闭 auto_failover
+        let (proxy_enabled, _) = app_state.db.get_proxy_flags_sync(app_type_str);
+        app_state
+            .db
+            .set_proxy_flags_sync(app_type_str, proxy_enabled, false)?;
+
+        // 切换供应商。需要本地路由的供应商也不在这里自动启动代理，
+        // 由用户在页面/设置中手动开启。
+        crate::services::ProviderService::switch(app_state.inner(), app_type.clone(), provider_id)?;
+
+        // 更新托盘菜单
+        if let Ok(new_menu) = create_tray_menu(app, app_state.inner()) {
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                let _ = tray.set_menu(Some(new_menu));
+            }
+        }
+
+        // 发射事件到前端
+        let event_data = serde_json::json!({
+            "appType": app_type_str,
+            "proxyEnabled": proxy_enabled,
+            "autoFailoverEnabled": false,
+            "providerId": provider_id
+        });
+        if let Err(e) = app.emit("proxy-flags-changed", event_data.clone()) {
+            log::error!("发射 proxy-flags-changed 事件失败: {e}");
+        }
+        // 发射 provider-switched 事件（保持向后兼容）
+        if let Err(e) = app.emit("provider-switched", event_data) {
+            log::error!("发射 provider-switched 事件失败: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// 创建动态托盘菜单
+pub fn create_tray_menu(
+    app: &tauri::AppHandle,
+    app_state: &AppState,
+) -> Result<Menu<tauri::Wry>, AppError> {
+    let app_settings = crate::settings::get_settings();
+    // 用户未显式设置语言（首次安装）时，按系统区域回退而非硬编码简体，
+    // 否则繁中系统的托盘会固定显示简体直到用户手动切换一次。
+    let language: &str = match app_settings.language.as_deref() {
+        Some(lang) => lang,
+        None => detect_system_tray_language(),
+    };
+    let tray_texts = TrayTexts::from_language(language);
+
+    // Get visible apps setting, default to all visible
+    let visible_apps = app_settings.visible_apps.unwrap_or_default();
+
+    let mut menu_builder = MenuBuilder::new(app);
+    let mut section_handles: std::collections::HashMap<AppType, Submenu<tauri::Wry>> =
+        std::collections::HashMap::new();
+
+    // 顶部：打开主界面 / 打开官方网站
+    let show_main_item =
+        MenuItem::with_id(app, "show_main", tray_texts.show_main, true, None::<&str>)
+            .map_err(|e| AppError::Message(format!("创建打开主界面菜单失败: {e}")))?;
+    let open_website_item = MenuItem::with_id(
+        app,
+        "open_website",
+        tray_texts.open_website,
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| AppError::Message(format!("创建打开官方网站菜单失败: {e}")))?;
+    menu_builder = menu_builder
+        .item(&show_main_item)
+        .item(&open_website_item)
+        .separator();
+
+    // Pre-compute proxy running state (used to disable official providers in tray menu)
+    let is_proxy_running = futures::executor::block_on(app_state.proxy_service.is_running());
+
+    // 每个应用类型折叠为子菜单，避免供应商过多时菜单过长
+    for section in TRAY_SECTIONS.iter() {
+        if !visible_apps.is_visible(&section.app_type) {
+            continue;
+        }
+
+        let app_type_str = section.app_type.as_str();
+        let providers = app_state.db.get_all_providers(app_type_str)?;
+
+        let current_id =
+            crate::settings::get_effective_current_provider(&app_state.db, &section.app_type)?
+                .unwrap_or_default();
+
+        if providers.is_empty() {
+            // 空供应商：显示禁用的菜单项
+            let label = format!("{} {}", section.header_label, tray_texts.no_providers_label);
+            let empty_item = MenuItem::with_id(app, section.empty_id, &label, false, None::<&str>)
+                .map_err(|e| {
+                    AppError::Message(format!("创建{}空提示失败: {e}", section.log_name))
+                })?;
+            menu_builder = menu_builder.item(&empty_item);
+        } else {
+            let current_provider = providers.get(&current_id);
+            let submenu_label = match current_provider {
+                Some(p) => {
+                    let suffix = format_usage_suffix(
+                        &app_state.usage_cache,
+                        &section.app_type,
+                        p,
+                        &current_id,
+                    )
+                    .unwrap_or_default();
+                    format!("{} · {}{}", section.header_label, p.name, suffix)
+                }
+                None => section.header_label.to_string(),
+            };
+            let submenu_id = format!("submenu_{}", app_type_str);
+
+            // Check if this app is under proxy takeover (for disabling official providers)
+            let is_app_taken_over = is_proxy_running
+                && (futures::executor::block_on(app_state.db.get_live_backup(app_type_str))
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    || app_state
+                        .proxy_service
+                        .detect_takeover_in_live_config_for_app(&section.app_type));
+
+            let mut submenu_builder = SubmenuBuilder::with_id(app, &submenu_id, &submenu_label);
+
+            for (id, provider) in sort_providers(&providers) {
+                let is_current = current_id == *id;
+                let is_official_blocked = is_app_taken_over
+                    && provider.category.as_deref() == Some("official")
+                    && !crate::services::provider::official_provider_supports_proxy_takeover(
+                        &section.app_type,
+                        provider,
+                    );
+                let label = if is_official_blocked {
+                    format!("{} \u{26D4}", &provider.name) // ⛔ emoji
+                } else {
+                    provider.name.clone()
+                };
+                let item = CheckMenuItem::with_id(
+                    app,
+                    format!("{}{}", section.prefix, id),
+                    &label,
+                    !is_official_blocked, // disabled when blocked
+                    is_current,
+                    None::<&str>,
+                )
+                .map_err(|e| {
+                    AppError::Message(format!("创建{}菜单项失败: {e}", section.log_name))
+                })?;
+                submenu_builder = submenu_builder.item(&item);
+            }
+
+            let submenu = submenu_builder.build().map_err(|e| {
+                AppError::Message(format!("构建{}子菜单失败: {e}", section.log_name))
+            })?;
+            section_handles.insert(section.app_type.clone(), submenu.clone());
+            menu_builder = menu_builder.item(&submenu);
+        }
+
+        menu_builder = menu_builder.separator();
+    }
+
+    // Oh My Pi 分区：OMP 不入 AppType/SQLite 体系，「当前」由
+    // config.yml:modelRoles.default 决定；点击走 omp_set_default_provider。
+    // OMP 未配置（无供应商）时不渲染该分区，避免空壳入口。
+    if visible_apps.is_omp_visible() {
+        match crate::commands::omp_tray_snapshot() {
+            Ok(snapshot) if !snapshot.providers.is_empty() => {
+                let mut submenu_builder = SubmenuBuilder::with_id(app, "submenu_omp", "Oh My Pi");
+                for (id, name) in &snapshot.providers {
+                    let item = CheckMenuItem::with_id(
+                        app,
+                        format!("omp_{}", id),
+                        name,
+                        true,
+                        snapshot.current_provider_id == *id,
+                        None::<&str>,
+                    )
+                    .map_err(|e| {
+                        AppError::Message(format!("创建 Oh My Pi 菜单项失败: {e}"))
+                    })?;
+                    submenu_builder = submenu_builder.item(&item);
+                }
+                let submenu = submenu_builder.build().map_err(|e| {
+                    AppError::Message(format!("构建 Oh My Pi 子菜单失败: {e}"))
+                })?;
+                menu_builder = menu_builder.item(&submenu).separator();
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("读取 Oh My Pi 托盘数据失败: {e}"),
+        }
+    }
+
+    // 项目 Profile 子菜单：项目列表全应用共享，按分组嵌套子菜单各自勾选/应用
+    // （组内应用可见且存在项目时才显示该组）
+    {
+        use crate::services::profile::ProfileScope;
+
+        let any_scope_visible = ProfileScope::ALL.iter().any(|scope| {
+            scope
+                .apps()
+                .iter()
+                .any(|app_type| visible_apps.is_visible(app_type))
+        });
+        let profiles = if any_scope_visible {
+            app_state.db.get_all_profiles()?
+        } else {
+            Vec::new()
+        };
+
+        let mut scope_submenus = Vec::new();
+        for scope in ProfileScope::ALL {
+            if profiles.is_empty()
+                || !scope
+                    .apps()
+                    .iter()
+                    .any(|app_type| visible_apps.is_visible(app_type))
+            {
+                continue;
+            }
+            let current_profile_id = app_state
+                .db
+                .get_current_profile_id(scope.as_str())?
+                .unwrap_or_default();
+            // 分组标签用产品名，不进 i18n
+            let scope_label = match scope {
+                ProfileScope::Claude => "Claude Code",
+                ProfileScope::ClaudeDesktop => "Claude Desktop",
+                ProfileScope::Codex => "Codex",
+            };
+            let mut scope_builder = SubmenuBuilder::with_id(
+                app,
+                format!("submenu_profiles_{}", scope.as_str()),
+                scope_label,
+            );
+            for profile in &profiles {
+                let item = CheckMenuItem::with_id(
+                    app,
+                    format!("profile_{}_{}", scope.as_str(), profile.id),
+                    &profile.name,
+                    true,
+                    current_profile_id == profile.id,
+                    None::<&str>,
+                )
+                .map_err(|e| AppError::Message(format!("创建项目菜单项失败: {e}")))?;
+                scope_builder = scope_builder.item(&item);
+            }
+            let none_item = CheckMenuItem::with_id(
+                app,
+                format!("profile_none_{}", scope.as_str()),
+                tray_texts.no_project_label,
+                true,
+                current_profile_id.is_empty(),
+                None::<&str>,
+            )
+            .map_err(|e| AppError::Message(format!("创建不使用项目菜单项失败: {e}")))?;
+            let scope_submenu = scope_builder
+                .separator()
+                .item(&none_item)
+                .build()
+                .map_err(|e| AppError::Message(format!("构建项目分组子菜单失败: {e}")))?;
+            scope_submenus.push(scope_submenu);
+        }
+
+        if !scope_submenus.is_empty() {
+            let mut profiles_builder =
+                SubmenuBuilder::with_id(app, "submenu_profiles", tray_texts.projects_label);
+            for scope_submenu in &scope_submenus {
+                profiles_builder = profiles_builder.item(scope_submenu);
+            }
+            let profiles_submenu = profiles_builder
+                .build()
+                .map_err(|e| AppError::Message(format!("构建项目子菜单失败: {e}")))?;
+            menu_builder = menu_builder.item(&profiles_submenu).separator();
+        }
+    }
+
+    let lightweight_item = CheckMenuItem::with_id(
+        app,
+        "lightweight_mode",
+        tray_texts.lightweight_mode,
+        true,
+        crate::lightweight::is_lightweight_mode(),
+        None::<&str>,
+    )
+    .map_err(|e| AppError::Message(format!("创建轻量模式菜单失败: {e}")))?;
+
+    menu_builder = menu_builder.item(&lightweight_item).separator();
+
+    // 退出菜单（分隔符已在上面的 section 循环中添加）
+    let quit_item = MenuItem::with_id(app, "quit", tray_texts.quit, true, None::<&str>)
+        .map_err(|e| AppError::Message(format!("创建退出菜单失败: {e}")))?;
+
+    menu_builder = menu_builder.item(&quit_item);
+
+    let menu = menu_builder
+        .build()
+        .map_err(|e| AppError::Message(format!("构建菜单失败: {e}")))?;
+
+    *TRAY_SECTION_SUBMENUS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = section_handles;
+
+    Ok(menu)
+}
+
+/// 就地更新各 app 分区子菜单的标题（usage 后缀变化时走这条），
+/// 避免 `set_menu` 导致用户打开中的菜单被关闭。
+/// 句柄由上一次 `create_tray_menu` 填充；为空（从未构建过菜单）时无事发生。
+fn update_tray_usage_labels(app: &tauri::AppHandle) {
+    let Some(app_state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let handles = match TRAY_SECTION_SUBMENUS.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    for section in TRAY_SECTIONS.iter() {
+        let Some(submenu) = handles.get(&section.app_type) else {
+            continue;
+        };
+        let Ok(providers) = app_state.db.get_all_providers(section.app_type.as_str()) else {
+            continue;
+        };
+        let Ok(Some(current_id)) =
+            crate::settings::get_effective_current_provider(&app_state.db, &section.app_type)
+        else {
+            continue;
+        };
+        let Some(provider) = providers.get(&current_id) else {
+            continue;
+        };
+        let suffix = format_usage_suffix(
+            &app_state.usage_cache,
+            &section.app_type,
+            provider,
+            &current_id,
+        )
+        .unwrap_or_default();
+        let new_label = format!("{} · {}{}", section.header_label, provider.name, suffix);
+        if let Err(e) = submenu.set_text(&new_label) {
+            log::debug!("[Tray] 更新{}子菜单标题失败: {e}", section.log_name);
+        }
+    }
+}
+
+pub fn refresh_tray_menu(app: &tauri::AppHandle) {
+    use crate::store::AppState;
+
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(new_menu) = create_tray_menu(app, state.inner()) {
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                if let Err(e) = tray.set_menu(Some(new_menu)) {
+                    log::error!("刷新托盘菜单失败: {e}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn apply_tray_policy(app: &tauri::AppHandle, dock_visible: bool) {
+    use tauri::ActivationPolicy;
+
+    let desired_policy = if dock_visible {
+        ActivationPolicy::Regular
+    } else {
+        ActivationPolicy::Accessory
+    };
+
+    if let Err(err) = app.set_dock_visibility(dock_visible) {
+        log::warn!("设置 Dock 显示状态失败: {err}");
+    }
+
+    if let Err(err) = app.set_activation_policy(desired_policy) {
+        log::warn!("设置激活策略失败: {err}");
+    }
+}
+
+/// 处理托盘菜单事件
+pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
+    log::info!("处理托盘菜单事件: {event_id}");
+
+    match event_id {
+        "show_main" => {
+            if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = window.set_skip_taskbar(false);
+                }
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+                #[cfg(target_os = "linux")]
+                {
+                    crate::linux_fix::nudge_main_window(window.clone());
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    apply_tray_policy(app, true);
+                }
+            } else if crate::lightweight::is_lightweight_mode() {
+                if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
+                    log::error!("退出轻量模式重建窗口失败: {e}");
+                }
+            }
+        }
+        "open_website" => {
+            // 项目主页（GitHub 仓库）
+            if let Err(e) = app
+                .opener()
+                .open_url("https://github.com/akiteet/ogg-switch", None::<String>)
+            {
+                log::error!("打开官方网站失败: {e}");
+            }
+        }
+        "lightweight_mode" => {
+            if crate::lightweight::is_lightweight_mode() {
+                if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
+                    log::error!("退出轻量模式失败: {e}");
+                }
+            } else if let Err(e) = crate::lightweight::enter_lightweight_mode(app) {
+                log::error!("进入轻量模式失败: {e}");
+            }
+        }
+        "quit" => {
+            log::info!("退出应用");
+            app.exit(0);
+        }
+        _ => {
+            if handle_profile_tray_event(app, event_id) {
+                return;
+            }
+            if handle_provider_tray_event(app, event_id) {
+                return;
+            }
+            log::warn!("未处理的菜单事件: {event_id}");
+        }
+    }
+}
+
+static LAST_TRAY_USAGE_REFRESH: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+const MIN_TRAY_USAGE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 合并多次快速触发的"usage 标题软更新"：批量刷新期间多个 usage 命令
+/// 同时成功时，只会产生一次就地 `set_text` 批量调用。走软更新而不是
+/// `refresh_tray_menu` 整建，避免用户打开中的菜单被 macOS 系统关闭。
+static TRAY_REBUILD_SCHEDULED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn schedule_tray_refresh(app: &tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    if TRAY_REBUILD_SCHEDULED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // 50ms 合窗：让同一轮 React Query / 托盘批量刷新触发的多个写入
+        // 共享一次标题更新。
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        TRAY_REBUILD_SCHEDULED.store(false, Ordering::Release);
+        update_tray_usage_labels(&app);
+    });
+}
+
+/// 并行刷新每个可见 app "当前 provider" 的用量；成功 / 失败结果都通过各
+/// command 的 write-through 逻辑写入 `UsageCache`，单次重建菜单由
+/// `schedule_tray_refresh` 做合并。内部 10 秒节流防止鼠标悬停反复进出时
+/// 雪崩请求；互斥锁被毒化时以上次状态为准继续推进，不会永久阻塞。
+///
+/// 刷新面与 `format_usage_suffix` 的展示面严格对齐 —— 每次悬停最多发
+/// `TRAY_SECTIONS.len()` 个用量查询；按供应商用量开关查询，Codex 托管账号
+/// 未保存开关时与卡片一致默认启用。
+pub(crate) async fn refresh_all_usage_in_tray(app: &tauri::AppHandle) {
+    use crate::commands::CopilotAuthState;
+    use futures::future::join_all;
+
+    {
+        let mut guard = LAST_TRAY_USAGE_REFRESH
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = std::time::Instant::now();
+        if let Some(last) = *guard {
+            if now.duration_since(last) < MIN_TRAY_USAGE_REFRESH_INTERVAL {
+                return;
+            }
+        }
+        *guard = Some(now);
+    }
+
+    let Some(app_state) = app.try_state::<AppState>() else {
+        return;
+    };
+
+    // 与 `create_tray_menu` 保持一致：用户隐藏的 app 不参与外部 API 查询，
+    // 避免在未使用的 app 上浪费请求、撞 rate limit 或反复触发鉴权失败日志。
+    let visible_apps = crate::settings::get_settings()
+        .visible_apps
+        .unwrap_or_default();
+
+    let mut usage_futures = Vec::new();
+
+    for section in TRAY_SECTIONS.iter() {
+        if !visible_apps.is_visible(&section.app_type) {
+            continue;
+        }
+
+        let app_type_str = section.app_type.as_str();
+        let log_name = section.log_name;
+
+        // 解析 effective current provider；未设置 / 出错都静默跳过，
+        // 与 create_tray_menu 的行为保持一致。
+        let current_id =
+            match crate::settings::get_effective_current_provider(&app_state.db, &section.app_type)
+            {
+                Ok(Some(id)) => id,
+                Ok(None) => continue,
+                Err(e) => {
+                    log::warn!("[Tray] 读取{log_name}当前供应商失败: {e}");
+                    continue;
+                }
+            };
+        // 只需当前 provider —— by-id 查询避免把整个 app 的 provider 列表加载
+        // 进内存（每次悬停 × 3 sections 的热路径）。
+        let current = match app_state.db.get_provider_by_id(&current_id, app_type_str) {
+            Ok(Some(p)) => p,
+            Ok(None) => continue,
+            Err(e) => {
+                log::warn!("[Tray] 读取{log_name}当前供应商失败: {e}");
+                continue;
+            }
+        };
+
+        if let Some(source) = tray_usage_source(&section.app_type, &current) {
+            let app_clone = app.clone();
+            let state = app.state::<AppState>();
+            let copilot_state = app.state::<CopilotAuthState>();
+            let xai_state = app.state::<crate::commands::XaiOAuthState>();
+            let provider_id = current_id.clone();
+            let app_str = app_type_str.to_string();
+            usage_futures.push(async move {
+                let result = match source {
+                    TrayUsageSource::ManagedCodex(account_id) => {
+                        let codex_state = app.state::<crate::commands::CodexOAuthState>();
+                        crate::commands::get_codex_oauth_quota(
+                            app_clone,
+                            state,
+                            Some(account_id),
+                            codex_state,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    TrayUsageSource::Script => crate::commands::queryProviderUsage(
+                        app_clone,
+                        state,
+                        copilot_state,
+                        xai_state,
+                        provider_id.clone(),
+                        app_str,
+                    )
+                    .await
+                    .map(|_| ()),
+                };
+                if let Err(e) = result {
+                    log::debug!("[Tray] 刷新{log_name}供应商 {provider_id} 用量失败: {e}");
+                }
+            });
+        }
+    }
+
+    join_all(usage_futures).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        format_script_summary, format_subscription_summary, format_usage_suffix,
+        provider_uses_official_subscription, tray_usage_source, TrayUsageSource, TRAY_ID,
+        TRAY_SECTIONS,
+    };
+    use crate::app_config::AppType;
+    use crate::provider::{Provider, UsageData, UsageResult};
+    use crate::services::subscription::{
+        CredentialStatus, QuotaTier, SubscriptionQuota, TIER_FIVE_HOUR, TIER_GEMINI_FLASH,
+        TIER_GEMINI_FLASH_LITE, TIER_GEMINI_PRO, TIER_MONTHLY, TIER_SEVEN_DAY,
+        TIER_SEVEN_DAY_FABLE, TIER_SEVEN_DAY_OPUS, TIER_SEVEN_DAY_SONNET, TIER_THIRTY_DAY,
+        TIER_WEEKLY_LIMIT,
+    };
+    use crate::services::usage_cache::UsageCache;
+
+    #[test]
+    fn tray_id_is_unique_to_app() {
+        assert_eq!(TRAY_ID, "ogg-switch");
+        assert_ne!(TRAY_ID, "main");
+    }
+
+    fn codex_provider(account_id: Option<&str>, enabled: Option<bool>) -> Provider {
+        serde_json::from_value(serde_json::json!({
+            "id": "managed-codex",
+            "name": "Managed Codex",
+            "settingsConfig": {"auth": {}, "config": ""},
+            "category": "official",
+            "meta": {
+                "authBinding": account_id.map(|id| serde_json::json!({
+                    "source": "managed_account",
+                    "authProvider": "codex_oauth",
+                    "accountId": id
+                })),
+                "usage_script": enabled.map(|enabled| serde_json::json!({
+                    "enabled": enabled,
+                    "language": "javascript",
+                    "code": "",
+                    "templateType": "official_subscription"
+                }))
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn managed_codex_quota_stays_out_of_the_app_wide_tray_cache() {
+        let provider = |id| codex_provider(id, Some(true));
+        assert!(!provider_uses_official_subscription(&provider(Some(
+            "account-1"
+        ))));
+        assert!(provider_uses_official_subscription(&provider(None)));
+    }
+
+    #[test]
+    fn managed_codex_tray_refresh_respects_binding_and_usage_toggle() {
+        for enabled in [Some(true), None] {
+            let provider = codex_provider(Some("account-1"), enabled);
+            assert_eq!(
+                tray_usage_source(&AppType::Codex, &provider),
+                Some(TrayUsageSource::ManagedCodex("account-1".to_string()))
+            );
+        }
+        let disabled = codex_provider(Some("account-1"), Some(false));
+        assert_eq!(tray_usage_source(&AppType::Codex, &disabled), None);
+
+        let mut fixed = codex_provider(Some("account-1"), Some(true));
+        fixed.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        assert_eq!(
+            tray_usage_source(&AppType::Codex, &fixed),
+            Some(TrayUsageSource::ManagedCodex("account-1".to_string()))
+        );
+        assert_eq!(
+            tray_usage_source(&AppType::Codex, &codex_provider(None, Some(true))),
+            Some(TrayUsageSource::Script)
+        );
+        let mut legacy = codex_provider(Some(" account-1 "), None);
+        legacy.category = None;
+        assert_eq!(
+            tray_usage_source(&AppType::Codex, &legacy),
+            Some(TrayUsageSource::ManagedCodex("account-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn managed_codex_tray_uses_bound_account_after_switch_or_rebind() {
+        let cache = UsageCache::new();
+        let first = codex_provider(Some("account-1"), Some(true));
+        let mut second = codex_provider(Some("account-2"), Some(true));
+        second.id = "second-provider".to_string();
+        let label = |provider: &Provider| {
+            format_usage_suffix(&cache, &AppType::Codex, provider, &provider.id)
+        };
+        cache.put_subscription(
+            AppType::Codex,
+            make_quota("codex", true, vec![tier(TIER_FIVE_HOUR, 99.0)]),
+        );
+        cache.put_script(
+            AppType::Codex,
+            first.id.clone(),
+            usage_result(true, vec![usage_data(Some(TIER_FIVE_HOUR), 99.0)]),
+        );
+        // Neither CLI nor stale provider-scoped data may fill an account miss.
+        assert_eq!(label(&first), None);
+        cache.put_codex_oauth(
+            "account-1".to_string(),
+            make_quota("codex_oauth", true, vec![tier(TIER_FIVE_HOUR, 12.0)]),
+        );
+        assert_eq!(label(&first).as_deref(), Some(" · 🟢 h12%"));
+        assert_eq!(label(&second), None);
+        cache.put_codex_oauth(
+            "account-2".to_string(),
+            make_quota("codex_oauth", true, vec![tier(TIER_FIVE_HOUR, 25.0)]),
+        );
+        assert_eq!(label(&second).as_deref(), Some(" · 🟢 h25%"));
+        // Rebinding the same provider must select the new account's snapshot.
+        second.id = first.id.clone();
+        assert_eq!(label(&second).as_deref(), Some(" · 🟢 h25%"));
+        // A late response for the previous account cannot overwrite this label.
+        cache.put_codex_oauth(
+            "account-1".to_string(),
+            make_quota("codex_oauth", true, vec![tier(TIER_FIVE_HOUR, 40.0)]),
+        );
+        assert_eq!(label(&second).as_deref(), Some(" · 🟢 h25%"));
+        assert_eq!(label(&first).as_deref(), Some(" · 🟢 h40%"));
+
+        let disabled = codex_provider(Some("account-2"), Some(false));
+        assert_eq!(label(&disabled), None);
+        assert_eq!(label(&second).as_deref(), Some(" · 🟢 h25%"));
+        cache.put_codex_oauth(
+            "account-2".to_string(),
+            SubscriptionQuota::error(
+                "codex_oauth",
+                CredentialStatus::Expired,
+                "expired".to_string(),
+            ),
+        );
+        assert_eq!(label(&second), None);
+        assert_eq!(label(&first).as_deref(), Some(" · 🟢 h40%"));
+    }
+
+    #[test]
+    fn native_codex_tray_still_uses_cli_subscription() {
+        let cache = UsageCache::new();
+        let mut native = codex_provider(None, Some(true));
+        native.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        cache.put_codex_oauth(
+            "account-1".to_string(),
+            make_quota("codex_oauth", true, vec![tier(TIER_FIVE_HOUR, 12.0)]),
+        );
+        cache.put_subscription(
+            AppType::Codex,
+            make_quota("codex", true, vec![tier(TIER_FIVE_HOUR, 25.0)]),
+        );
+        assert_eq!(
+            format_usage_suffix(&cache, &AppType::Codex, &native, &native.id).as_deref(),
+            Some(" · 🟢 h25%")
+        );
+    }
+
+    #[test]
+    fn locale_maps_traditional_chinese_variants_to_zh_tw() {
+        use super::map_locale_to_tray_language;
+        for locale in [
+            "zh-TW",
+            "zh-HK",
+            "zh-MO",
+            "zh-Hant",
+            "zh-Hant-TW",
+            "zh-hant-hk",
+        ] {
+            assert_eq!(
+                map_locale_to_tray_language(locale),
+                "zh-TW",
+                "expected {locale} -> zh-TW"
+            );
+        }
+    }
+
+    #[test]
+    fn locale_maps_simplified_chinese_variants_to_zh() {
+        use super::map_locale_to_tray_language;
+        for locale in ["zh", "zh-CN", "zh-SG", "zh-Hans", "zh-Hans-CN"] {
+            assert_eq!(
+                map_locale_to_tray_language(locale),
+                "zh",
+                "expected {locale} -> zh"
+            );
+        }
+    }
+
+    #[test]
+    fn locale_maps_japanese_and_english() {
+        use super::map_locale_to_tray_language;
+        assert_eq!(map_locale_to_tray_language("ja-JP"), "ja");
+        assert_eq!(map_locale_to_tray_language("ja"), "ja");
+        assert_eq!(map_locale_to_tray_language("en-US"), "en");
+        assert_eq!(map_locale_to_tray_language("en"), "en");
+    }
+
+    #[test]
+    fn locale_unknown_falls_back_to_zh() {
+        use super::map_locale_to_tray_language;
+        // 与前端 getInitialLanguage 的默认值保持一致。
+        for locale in ["de-DE", "fr", "ko-KR", ""] {
+            assert_eq!(
+                map_locale_to_tray_language(locale),
+                "zh",
+                "expected {locale} -> zh (default)"
+            );
+        }
+    }
+
+    #[test]
+    fn tray_sections_include_grokbuild_provider_switching() {
+        let section = TRAY_SECTIONS
+            .iter()
+            .find(|section| section.app_type == AppType::GrokBuild)
+            .expect("Grok Build tray section should exist");
+
+        assert_eq!(section.prefix, "grokbuild_");
+        assert_eq!(section.empty_id, "grokbuild_empty");
+        assert_eq!(section.header_label, "Grok Build");
+    }
+
+    fn make_quota(tool: &str, success: bool, tiers: Vec<QuotaTier>) -> SubscriptionQuota {
+        SubscriptionQuota {
+            tool: tool.to_string(),
+            credential_status: CredentialStatus::Valid,
+            credential_message: None,
+            success,
+            tiers,
+            extra_usage: None,
+            error: None,
+            queried_at: Some(0),
+        }
+    }
+
+    fn tier(name: &str, utilization: f64) -> QuotaTier {
+        QuotaTier {
+            name: name.to_string(),
+            utilization,
+            resets_at: None,
+            used_value_usd: None,
+            max_value_usd: None,
+        }
+    }
+
+    #[test]
+    fn claude_summary_uses_h_and_w_labels() {
+        let quota = make_quota(
+            "claude",
+            true,
+            vec![tier("five_hour", 9.0), tier("seven_day", 27.0)],
+        );
+        let s = format_subscription_summary(&quota).expect("should format");
+        assert!(s.contains("h9%"), "expected h9% in {s}");
+        assert!(s.contains("w27%"), "expected w27% in {s}");
+    }
+
+    #[test]
+    fn claude_fable_summary_keeps_weekly_total_and_model_limit_separate() {
+        let quota = make_quota(
+            "claude",
+            true,
+            vec![
+                tier(TIER_FIVE_HOUR, 12.0),
+                tier(TIER_SEVEN_DAY, 25.0),
+                tier(TIER_SEVEN_DAY_FABLE, 95.0),
+            ],
+        );
+        assert_eq!(
+            format_subscription_summary(&quota).as_deref(),
+            Some("🔴 h12% w25% Fable95%")
+        );
+        // 模板查询扁平化后的 UsageData 也必须生成相同摘要。
+        let result = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_FIVE_HOUR), 12.0),
+                usage_data(Some(TIER_SEVEN_DAY), 25.0),
+                usage_data(Some(TIER_SEVEN_DAY_FABLE), 95.0),
+            ],
+        );
+        assert_eq!(
+            format_script_summary(&result),
+            format_subscription_summary(&quota)
+        );
+    }
+
+    #[test]
+    fn claude_fable_summary_shows_unused_model_limit() {
+        let quota = make_quota("claude", true, vec![tier(TIER_SEVEN_DAY_FABLE, 0.0)]);
+        assert_eq!(
+            format_subscription_summary(&quota).as_deref(),
+            Some("🟢 Fable0%")
+        );
+    }
+
+    #[test]
+    fn gemini_summary_uses_p_and_f_labels() {
+        let quota = make_quota(
+            "gemini",
+            true,
+            vec![tier("gemini_pro", 15.0), tier("gemini_flash", 42.0)],
+        );
+        let s = format_subscription_summary(&quota).expect("should format");
+        assert!(s.contains("p15%"), "expected p15% in {s}");
+        assert!(s.contains("f42%"), "expected f42% in {s}");
+    }
+
+    #[test]
+    fn gemini_summary_includes_all_three_tiers() {
+        let quota = make_quota(
+            "gemini",
+            true,
+            vec![
+                tier("gemini_pro", 5.0),
+                tier("gemini_flash", 42.0),
+                tier("gemini_flash_lite", 80.0),
+            ],
+        );
+        let s = format_subscription_summary(&quota).expect("should format");
+        assert!(s.contains("p5%"), "expected p5% in {s}");
+        assert!(s.contains("f42%"), "expected f42% in {s}");
+        assert!(s.contains("l80%"), "expected l80% in {s}");
+    }
+
+    #[test]
+    fn gemini_summary_lite_only_still_renders() {
+        // flash_lite 如果是 API 返回的唯一 tier，仍应显示（避免前端 footer 能看到、
+        // 托盘空白的不对称）。
+        let quota = make_quota("gemini", true, vec![tier("gemini_flash_lite", 80.0)]);
+        let s = format_subscription_summary(&quota).expect("should format");
+        assert!(s.contains("l80%"), "expected l80% in {s}");
+    }
+
+    #[test]
+    fn codex_summary_thirty_day_only_still_renders() {
+        // Codex 免费方案的唯一 tier 是 30 天窗口。前端 footer 已能显示（TIER_I18N_KEYS
+        // 有 "30_day"），托盘也必须能显示——否则就是这条不变量要防的非对称：footer
+        // 能看到、托盘却空白。30_day 归入 "m" 月分组。见 #3651。
+        let quota = make_quota("codex", true, vec![tier(TIER_THIRTY_DAY, 85.0)]);
+        let s = format_subscription_summary(&quota).expect("should format");
+        assert!(s.contains("m85%"), "expected m85% in {s}");
+    }
+
+    #[test]
+    fn gemini_summary_emoji_reflects_highest_tier_including_lite() {
+        // lite 是利用率最高的那条 → emoji 必须是红色，不能被 pro/flash 掩盖。
+        let quota = make_quota(
+            "gemini",
+            true,
+            vec![
+                tier("gemini_pro", 10.0),
+                tier("gemini_flash", 20.0),
+                tier("gemini_flash_lite", 95.0),
+            ],
+        );
+        let s = format_subscription_summary(&quota).unwrap();
+        assert!(
+            s.starts_with("\u{1F534}"),
+            "expected red emoji (lite worst) in {s}"
+        );
+    }
+
+    #[test]
+    fn worst_emoji_reflects_highest_utilization() {
+        // 🔴 = \u{1F534}; 任一 tier ≥ 90% 时预期显示红色。
+        let quota = make_quota(
+            "claude",
+            true,
+            vec![tier("five_hour", 10.0), tier("seven_day", 95.0)],
+        );
+        let s = format_subscription_summary(&quota).unwrap();
+        assert!(s.starts_with("\u{1F534}"), "expected red emoji in {s}");
+    }
+
+    #[test]
+    fn subscription_summary_week_aliases_use_highest_utilization() {
+        let quota = make_quota(
+            "claude",
+            true,
+            vec![
+                tier(TIER_FIVE_HOUR, 10.0),
+                tier(TIER_SEVEN_DAY_OPUS, 20.0),
+                tier(TIER_SEVEN_DAY_SONNET, 95.0),
+            ],
+        );
+        let s = format_subscription_summary(&quota).unwrap();
+        assert!(s.contains("w95%"), "expected w95% in {s}");
+        assert!(s.starts_with("\u{1F534}"), "expected red emoji in {s}");
+    }
+
+    #[test]
+    fn failure_quota_returns_none() {
+        let quota = make_quota("claude", false, vec![tier("five_hour", 50.0)]);
+        assert!(format_subscription_summary(&quota).is_none());
+    }
+
+    #[test]
+    fn unknown_tiers_return_none() {
+        let quota = make_quota("claude", true, vec![tier("one_hour", 80.0)]);
+        assert!(format_subscription_summary(&quota).is_none());
+    }
+
+    #[test]
+    fn gemini_without_any_known_tiers_returns_none() {
+        // 完全没有 pro/flash/flash_lite 三种 tier 的退化响应 → None。
+        let quota = make_quota("gemini", true, vec![tier("some_future_tier", 80.0)]);
+        assert!(format_subscription_summary(&quota).is_none());
+    }
+
+    fn usage_data(plan_name: Option<&str>, utilization: f64) -> UsageData {
+        UsageData {
+            plan_name: plan_name.map(String::from),
+            extra: None,
+            is_valid: Some(true),
+            invalid_message: None,
+            total: Some(100.0),
+            used: Some(utilization),
+            remaining: Some(100.0 - utilization),
+            unit: Some("%".to_string()),
+        }
+    }
+
+    fn usage_result(success: bool, data: Vec<UsageData>) -> UsageResult {
+        UsageResult {
+            success,
+            data: if data.is_empty() { None } else { Some(data) },
+            error: None,
+        }
+    }
+
+    #[test]
+    fn script_summary_token_plan_two_tiers() {
+        let r = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_FIVE_HOUR), 12.0),
+                usage_data(Some(TIER_WEEKLY_LIMIT), 80.0),
+            ],
+        );
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("h12%"), "expected h12% in {s}");
+        assert!(s.contains("w80%"), "expected w80% in {s}");
+        assert!(s.starts_with("\u{1F7E0}"), "expected orange emoji in {s}");
+    }
+
+    #[test]
+    fn script_summary_token_plan_worst_drives_emoji() {
+        let r = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_FIVE_HOUR), 20.0),
+                usage_data(Some(TIER_WEEKLY_LIMIT), 95.0),
+            ],
+        );
+        let s = format_script_summary(&r).unwrap();
+        assert!(s.starts_with("\u{1F534}"), "expected red emoji in {s}");
+    }
+
+    #[test]
+    fn script_summary_token_plan_five_hour_only() {
+        let r = usage_result(true, vec![usage_data(Some(TIER_FIVE_HOUR), 8.0)]);
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("h8%"), "expected h8% in {s}");
+        assert!(
+            !s.contains("plan_name"),
+            "plan_name should not leak into label: {s}"
+        );
+    }
+
+    #[test]
+    fn script_summary_token_plan_weekly_only() {
+        let r = usage_result(true, vec![usage_data(Some(TIER_WEEKLY_LIMIT), 50.0)]);
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("w50%"), "expected w50% in {s}");
+    }
+
+    #[test]
+    fn script_summary_token_plan_volcengine_three_tiers_with_monthly() {
+        // 火山方舟 Agent Plan 回 5h/周/月三档，托盘应包含 m（月）窗口，
+        // 不再静默丢弃。
+        let r = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_FIVE_HOUR), 25.0),
+                usage_data(Some(TIER_WEEKLY_LIMIT), 30.0),
+                usage_data(Some(TIER_MONTHLY), 42.0),
+            ],
+        );
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("h25%"), "expected h25% in {s}");
+        assert!(s.contains("w30%"), "expected w30% in {s}");
+        assert!(s.contains("m42%"), "expected m42% in {s}");
+    }
+
+    #[test]
+    fn script_summary_token_plan_monthly_only_renders_label_not_raw_name() {
+        // 仅月窗口激活时不应回落到原始 "monthly" 机器名，而是走 m 标签。
+        let r = usage_result(true, vec![usage_data(Some(TIER_MONTHLY), 60.0)]);
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("m60%"), "expected m60% in {s}");
+        assert!(
+            !s.contains("monthly"),
+            "raw tier name should not leak into label: {s}"
+        );
+    }
+
+    #[test]
+    fn script_summary_official_subscription_claude_uses_h_and_w_labels() {
+        let r = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_FIVE_HOUR), 12.0),
+                usage_data(Some(TIER_SEVEN_DAY), 80.0),
+            ],
+        );
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("h12%"), "expected h12% in {s}");
+        assert!(s.contains("w80%"), "expected w80% in {s}");
+        assert!(
+            !s.contains(TIER_SEVEN_DAY),
+            "tier machine name should not leak into label: {s}"
+        );
+    }
+
+    #[test]
+    fn script_summary_week_aliases_use_highest_utilization() {
+        let r = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_FIVE_HOUR), 10.0),
+                usage_data(Some(TIER_SEVEN_DAY_OPUS), 20.0),
+                usage_data(Some(TIER_SEVEN_DAY_SONNET), 95.0),
+            ],
+        );
+        let s = format_script_summary(&r).unwrap();
+        assert!(s.contains("w95%"), "expected w95% in {s}");
+        assert!(s.starts_with("\u{1F534}"), "expected red emoji in {s}");
+    }
+
+    #[test]
+    fn script_summary_official_subscription_gemini_uses_short_labels() {
+        let r = usage_result(
+            true,
+            vec![
+                usage_data(Some(TIER_GEMINI_PRO), 15.0),
+                usage_data(Some(TIER_GEMINI_FLASH), 42.0),
+                usage_data(Some(TIER_GEMINI_FLASH_LITE), 80.0),
+            ],
+        );
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("p15%"), "expected p15% in {s}");
+        assert!(s.contains("f42%"), "expected f42% in {s}");
+        assert!(s.contains("l80%"), "expected l80% in {s}");
+        assert!(
+            !s.contains("gemini_"),
+            "Gemini tier machine names should not leak into label: {s}"
+        );
+    }
+
+    #[test]
+    fn script_summary_single_bucket_fallback_with_plan_name() {
+        let r = usage_result(true, vec![usage_data(Some("Copilot Pro"), 40.0)]);
+        let s = format_script_summary(&r).expect("should format");
+        assert!(s.contains("Copilot Pro"), "expected plan name in {s}");
+        assert!(s.contains("40%"), "expected 40% in {s}");
+        assert!(
+            !s.contains("h40%"),
+            "must not relabel non-token-plan data as h: {s}"
+        );
+    }
+
+    #[test]
+    fn script_summary_single_bucket_fallback_without_plan_name() {
+        let r = usage_result(true, vec![usage_data(None, 15.0)]);
+        let s = format_script_summary(&r).expect("should format");
+        assert_eq!(s, "\u{1F7E2} 15%", "expected emoji + pct only, got {s}");
+    }
+
+    #[test]
+    fn script_summary_failure_returns_none() {
+        let r = usage_result(false, vec![usage_data(Some(TIER_FIVE_HOUR), 12.0)]);
+        assert!(format_script_summary(&r).is_none());
+    }
+
+    #[test]
+    fn script_summary_empty_data_returns_none() {
+        let r = usage_result(true, vec![]);
+        assert!(format_script_summary(&r).is_none());
+    }
+}

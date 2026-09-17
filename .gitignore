@@ -1,0 +1,42 @@
+node_modules/
+dist/
+release/
+.DS_Store
+*.log
+.env
+.env.local
+*.tsbuildinfo
+.npmrc
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+/.claude
+/.codex
+/.gemini
+/.ogg-switch
+/.grok-switch
+/.idea
+/.vscode
+vitest-report.json
+nul
+
+# Flatpak build artifacts
+flatpak/grok-switch.deb
+flatpak-build/
+flatpak-repo/
+.worktrees/
+.spec-workflow/
+copilot-api
+.history
+CODEBUDDY.md
+mainWindow.js
+
+# Internal working notes / planning docs (not for release)
+.trae/
+HANDOFF.md
+logo_search.md
+missing-logos.md
+
+# Updater signing keys — never commit
+*.key
+*.key.pub
