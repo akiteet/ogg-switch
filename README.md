@@ -1,5 +1,7 @@
 # OGG Switch
 
+English | [简体中文](README.zh-CN.md)
+
 **One control plane for Grok Build and Oh My Pi.**
 
 [![Release](https://img.shields.io/github/v/release/akiteet/ogg-switch?style=flat-square)](https://github.com/akiteet/ogg-switch/releases)
