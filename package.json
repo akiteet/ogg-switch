@@ -1,7 +1,7 @@
 {
   "name": "ogg-switch",
-  "version": "1.0.0",
-  "description": "OGG Switch - Unified desktop app for Grok Build and Oh My Pi (OMP) AI orchestration",
+  "version": "1.1.0",
+  "description": "OGG Switch - Unified desktop app for Grok Build, Antigravity and Oh My Pi (OMP) AI orchestration",
   "type": "module",
   "scripts": {
     "dev": "pnpm tauri dev",
@@ -19,6 +19,7 @@
     "tauri",
     "grok",
     "xai",
+    "antigravity",
     "oh-my-pi",
     "ai",
     "llm",

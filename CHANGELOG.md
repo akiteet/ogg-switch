@@ -5,6 +5,39 @@ All notable changes to OGG Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-09-21
+
+### Added
+
+- Antigravity CLI (agy) as a third managed runtime: provider switching through
+  `~/.gemini/antigravity-cli/settings.json` and persistent environment variables,
+  a Google account pool that snapshots and restores the current agy sign-in,
+  session browsing with resume via `agy --conversation <id>`, usage analytics,
+  and the official product icon alongside two ready-made presets
+- Provider switch timeline: historical usage is attributed to the provider that
+  was active when the session ran
+- Icon metadata for 53 providers, enabling search and theme coloring in the
+  icon picker
+
+### Changed
+
+- OGG Switch manages three runtimes: Grok Build, Antigravity and Oh My Pi. Interfaces
+  and commands inherited from upstream for other agents have been removed; existing
+  provider records stay in the database but are no longer surfaced.
+- The local proxy targets Grok Build only.
+- Database schema upgraded to v20. Migration runs automatically and takes a backup
+  first; databases written by v1.1.0 cannot be opened by older versions.
+
+### Fixed
+
+- Usage dashboard: Antigravity experiment flags no longer appear as model names
+- Usage dashboard: Antigravity entries carry the session's real event time instead
+  of the import time
+- Usage dashboard: OMP reports per-request usage again
+- OMP providers show their configured display name in model and role selectors
+
 ## [1.0.0] - 2026-09-17
 
 First public release.

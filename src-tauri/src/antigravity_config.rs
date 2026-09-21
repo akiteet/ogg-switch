@@ -204,6 +204,7 @@ mod persistent_env {
     use super::PersistentEnvOps;
     use crate::error::AppError;
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
 
     /// Unix 持久环境变量：在 shell rc 文件（~/.zshrc、~/.bashrc）里维护
