@@ -238,10 +238,15 @@ impl Provider {
                 let parsed: Value = config_text
                     .and_then(|t| serde_json::from_str(t).ok())
                     .unwrap_or(Value::Null);
-                (
-                    str_at(parsed.get("baseUrl")),
-                    str_at(parsed.get("apiKey")),
-                )
+                (str_at(parsed.get("baseUrl")), str_at(parsed.get("apiKey")))
+            }
+            // Antigravity (agy) 与 Gemini 同构：凭据在 env map 的 Google 专属键里
+            //（api-key 供应商才有效；oauth 账号无凭据，返回空由调用方兜底）。
+            AppType::Antigravity => {
+                let env = settings.get("env");
+                let base_url = str_at(env.and_then(|e| e.get("GOOGLE_GEMINI_BASE_URL")));
+                let api_key = first_non_empty(env, &["GEMINI_API_KEY"]);
+                (base_url, api_key)
             }
             // Claude and Claude Desktop both use the Anthropic-style env map, keeping
             // the OpenRouter/Google key fallbacks the JS-script path relies on.

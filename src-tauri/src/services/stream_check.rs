@@ -188,6 +188,10 @@ impl StreamCheckService {
             AppType::ClaudeDesktop => ClaudeAdapter::new()
                 .extract_base_url(provider)
                 .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}"))),
+            // agy 供应商不走本地代理，直连探测：settings_config 形如
+            // {"authType":"api-key","env":{"GEMINI_API_KEY":...,"GOOGLE_GEMINI_BASE_URL":...}}
+            // 与 services/provider 的凭据提取口径一致
+            AppType::Antigravity => Self::extract_antigravity_base_url(provider),
             _ => get_adapter(app_type)
                 .ok_or_else(|| {
                     AppError::InvalidInput(format!(
@@ -197,6 +201,36 @@ impl StreamCheckService {
                 })?
                 .extract_base_url(provider)
                 .map_err(|e| AppError::Message(format!("Failed to extract base_url: {e}"))),
+        }
+    }
+
+    /// agy 供应商 baseUrl 提取。OAuth 态（Google 登录/账号条目）无自定义端点，
+    /// 明确报错而非误报配置缺失。
+    fn extract_antigravity_base_url(provider: &Provider) -> Result<String, AppError> {
+        let auth_type = provider
+            .settings_config
+            .get("authType")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if auth_type == crate::antigravity_config::AUTH_TYPE_OAUTH {
+            return Err(AppError::Message(
+                "该 Antigravity 供应商为 Google 登录态（凭据由 agy 管理），无可探测的 baseUrl"
+                    .to_string(),
+            ));
+        }
+        let base_url = provider
+            .settings_config
+            .get("env")
+            .and_then(|env| env.get("GOOGLE_GEMINI_BASE_URL"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        match base_url {
+            Some(url) => Ok(url.to_string()),
+            None => Err(AppError::Message(
+                "该 Antigravity 供应商未配置自定义端点（Google 官方直连），无可探测的 baseUrl"
+                    .to_string(),
+            )),
         }
     }
 

@@ -49,9 +49,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-// Pi/omp 为原生目录应用（exists=active），不参与"从其他应用导入"列
+// 原生目录应用（exists=active）不参与「从其他应用导入」列
 const IMPORT_SKILLS_APP_IDS = SKILLS_APP_IDS.filter(
-  (app) => app !== "pi" && app !== "omp",
+  (app) => app !== "pi" && app !== "omp" && app !== "antigravity",
 );
 
 interface UnifiedSkillsPanelProps {
@@ -132,10 +132,7 @@ const UnifiedSkillsPanel = React.forwardRef<
   } = useCheckSkillUpdates();
   const updateSkillMutation = useUpdateSkill();
   const [isUpdatingAll, setIsUpdatingAll] = useState(false);
-  const visibleSkillAppIds =
-    currentApp === "pi" || currentApp === "omp"
-      ? SKILLS_APP_IDS
-      : IMPORT_SKILLS_APP_IDS;
+  const visibleSkillAppIds = SKILLS_APP_IDS;
 
   const mutationPending =
     deleteBackupMutation.isPending ||
@@ -228,6 +225,7 @@ const UnifiedSkillsPanel = React.forwardRef<
       hermes: 0,
       pi: 0,
       omp: 0,
+      antigravity: 0,
     };
     if (!skills) return counts;
     skills.forEach((skill) => {

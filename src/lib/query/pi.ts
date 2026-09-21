@@ -4,7 +4,6 @@ import { piApi } from "@/lib/api/pi";
 export const piKeys = {
   all: ["pi"] as const,
   currentState: ["pi", "currentState"] as const,
-  sessionDiscovery: ["pi", "sessionDiscovery"] as const,
 };
 
 export const invalidatePiProviderCaches = async (queryClient: QueryClient) => {

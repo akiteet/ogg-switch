@@ -32,8 +32,9 @@ impl McpApps {
             AppType::OpenCode => self.opencode,
             AppType::OpenClaw => false, // OpenClaw doesn't support MCP
             AppType::Hermes => self.hermes,
-            AppType::Pi => false, // Pi core has no native MCP registry.
+            AppType::Pi => false,  // Pi core has no native MCP registry.
             AppType::Omp => false, // omp 与上游 Pi 同源：无 MCP 注册表（实测 `omp mcp` 非子命令）。
+            AppType::Antigravity => false, // agy 无 MCP 注册表，v1 不接入
             AppType::ClaudeDesktop => false,
         }
     }
@@ -50,6 +51,7 @@ impl McpApps {
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi => {}            // Pi core has no native MCP registry.
             AppType::Omp => {}           // omp 同 Pi：无 MCP 注册表，忽略。
+            AppType::Antigravity => {}   // agy 无 MCP 注册表，v1 不接入
             AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
         }
     }
@@ -108,6 +110,8 @@ pub struct SkillApps {
     pub pi: bool,
     #[serde(default)]
     pub omp: bool,
+    #[serde(default)]
+    pub antigravity: bool,
 }
 
 impl SkillApps {
@@ -122,6 +126,7 @@ impl SkillApps {
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
             AppType::Omp => self.omp, // omp 与 Pi 同源：原生 skills 目录（--skills/--no-skills 实锤）。
+            AppType::Antigravity => self.antigravity,
             AppType::OpenClaw => false, // OpenClaw doesn't support Skills
             AppType::ClaudeDesktop => false,
         }
@@ -138,6 +143,7 @@ impl SkillApps {
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi => self.pi = enabled,
             AppType::Omp => self.omp = enabled,
+            AppType::Antigravity => self.antigravity = enabled,
             AppType::OpenClaw => {} // OpenClaw doesn't support Skills, ignore
             AppType::ClaudeDesktop => {} // Claude Desktop 3P profiles don't use OGG Switch skill sync
         }
@@ -170,6 +176,9 @@ impl SkillApps {
         if self.omp {
             apps.push(AppType::Omp);
         }
+        if self.antigravity {
+            apps.push(AppType::Antigravity);
+        }
         apps
     }
 
@@ -183,6 +192,7 @@ impl SkillApps {
             && !self.hermes
             && !self.pi
             && !self.omp
+            && !self.antigravity
     }
 
     /// 仅启用指定应用（其他应用设为禁用）
@@ -406,6 +416,11 @@ pub enum AppType {
     /// 供应商不落 SQLite；OAuth 凭据在 omp auth-broker 凭据库。
     /// 技能目录 ~/.omp/agent/skills 与 Pi 同构（omp 原生 --skills/--no-skills 实锤支持）。
     Omp,
+    /// Antigravity CLI（agy，Gemini CLI 的官方继任者）。与 Gemini CLI 不同：
+    /// agy 不加载 ~/.gemini/.env，API key 认证 = ~/.gemini/antigravity-cli/settings.json
+    /// 的 modelProvider:"gemini" + 持久环境变量 GEMINI_API_KEY/GOOGLE_GEMINI_BASE_URL；
+    /// Google OAuth 登录态存于 antigravity-oauth-token 文件，多账号 = 快照/恢复该文件。
+    Antigravity,
 }
 
 impl AppType {
@@ -421,6 +436,7 @@ impl AppType {
             AppType::Hermes => "hermes",
             AppType::Pi => "pi",
             AppType::Omp => "omp",
+            AppType::Antigravity => "antigravity",
         }
     }
 
@@ -436,11 +452,14 @@ impl AppType {
         )
     }
 
+    /// 是否支持本地代理（gateway + failover 数据面）。
+    ///
+    /// 只有 Grok Build 支持：`proxy/server.rs::build_router` 的路由全是
+    /// `/grokbuild/*`，claude / codex / gemini 的代理路由已随 agent 下线移除。
+    /// 历史库的 `proxy_config` 行可能仍带这三个 app 且 `enabled=true`，
+    /// 本方法只用于拒绝/跳过守卫，缩小集合不会破坏 Grok Build 路径。
     pub fn supports_local_proxy(&self) -> bool {
-        matches!(
-            self,
-            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
-        )
+        matches!(self, AppType::GrokBuild)
     }
 
     /// Return an iterator over all app types
@@ -456,6 +475,7 @@ impl AppType {
             AppType::Hermes,
             AppType::Pi,
             AppType::Omp,
+            AppType::Antigravity,
         ]
         .into_iter()
     }
@@ -477,10 +497,11 @@ impl FromStr for AppType {
             "hermes" => Ok(AppType::Hermes),
             "pi" => Ok(AppType::Pi),
             "omp" => Ok(AppType::Omp),
+            "antigravity" | "agy" => Ok(AppType::Antigravity),
             other => Err(AppError::localized(
                 "unsupported_app",
-                format!("不支持的应用标识: '{other}'。可选值: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, omp。"),
-                format!("Unsupported app id: '{other}'. Allowed: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, omp."),
+                format!("不支持的应用标识: '{other}'。可选值: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, omp, antigravity。"),
+                format!("Unsupported app id: '{other}'. Allowed: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, omp, antigravity."),
             )),
         }
     }
@@ -522,6 +543,7 @@ impl CommonConfigSnippets {
             AppType::Hermes => self.hermes.as_ref(),
             AppType::Pi => None,
             AppType::Omp => None, // omp 供应商在 models.yml，无通用配置片段机制
+            AppType::Antigravity => None, // agy 受管面只有 modelProvider + 两个环境变量，无通用片段机制
         }
     }
 
@@ -537,7 +559,8 @@ impl CommonConfigSnippets {
             AppType::OpenClaw => self.openclaw = snippet,
             AppType::Hermes => self.hermes = snippet,
             AppType::Pi => {}
-            AppType::Omp => {} // omp 无通用配置片段机制
+            AppType::Omp => {}         // omp 无通用配置片段机制
+            AppType::Antigravity => {} // agy 无通用配置片段机制
         }
     }
 }
@@ -866,6 +889,8 @@ impl MultiAppConfig {
             AppType::Pi => return Ok(false),
             // omp 的 Prompt 走 AGENTS.md（prompt_files.rs），不进这套遗留状态
             AppType::Omp => return Ok(false),
+            // agy 的 Prompt v1 不接入遗留状态
+            AppType::Antigravity => return Ok(false),
         };
 
         prompts.insert(id, prompt);
@@ -911,6 +936,7 @@ impl MultiAppConfig {
                 AppType::Hermes => continue,   // Hermes didn't exist in v3.6.x, skip
                 AppType::Pi => continue,       // Pi didn't exist in v3.6.x, skip
                 AppType::Omp => continue,      // omp didn't exist in v3.6.x, skip
+                AppType::Antigravity => continue, // antigravity didn't exist in v3.6.x, skip
             };
 
             for (id, entry) in old_servers {

@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn failover_rejects_apps_without_a_proxy_data_plane() {
-        assert!(require_failover_app("claude").is_ok());
+        assert!(require_failover_app("grokbuild").is_ok());
         assert!(require_failover_app("pi").is_err());
     }
 

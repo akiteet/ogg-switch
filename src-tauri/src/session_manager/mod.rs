@@ -56,9 +56,10 @@ pub struct DeleteSessionOutcome {
 }
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
-    // Grok Build + Oh My Pi 两路扫描。
+    // Grok Build + Oh My Pi + Antigravity 三路扫描。
     let mut sessions = grokbuild::scan_sessions();
     sessions.extend(providers::omp::scan_sessions());
+    sessions.extend(providers::antigravity::scan_sessions());
     sessions
 }
 
@@ -66,6 +67,7 @@ pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<Session
     match provider_id {
         "grokbuild" => grokbuild::load_messages(Path::new(source_path)),
         "omp" => providers::omp::load_messages(Path::new(source_path)),
+        "antigravity" => providers::antigravity::load_messages(Path::new(source_path)),
         other => Err(format!("不支持读取 {other} 会话")),
     }
 }
@@ -84,6 +86,16 @@ pub fn delete_session(
         let validated_source =
             canonicalize_existing_path(Path::new(source_path), "session source")?;
         return providers::omp::delete_session(&validated_root, &validated_source, session_id)
+            .map_err(|e| e.to_string());
+    }
+    if provider_id == "antigravity" {
+        let roots = providers::antigravity::session_roots();
+        let root = roots
+            .first()
+            .ok_or_else(|| "Antigravity session root unavailable".to_string())?;
+        let validated_root = canonicalize_existing_path(root, "session root")?;
+        let source = Path::new(source_path);
+        return providers::antigravity::delete_session(&validated_root, source, session_id)
             .map_err(|e| e.to_string());
     }
     if provider_id != "grokbuild" {
@@ -120,7 +132,8 @@ fn delete_session_with_roots(
         saw_existing_root = true;
         let validated_root = canonicalize_existing_path(root, "session root")?;
         if validated_source.starts_with(&validated_root) {
-            return grokbuild::delete_session(&validated_root, &validated_source, session_id).map_err(|e| e.to_string());
+            return grokbuild::delete_session(&validated_root, &validated_source, session_id)
+                .map_err(|e| e.to_string());
         }
     }
 
@@ -143,7 +156,9 @@ fn delete_session_with_roots(
 fn provider_roots(provider_id: &str) -> Result<Vec<PathBuf>, String> {
     // grok-switch 硬隔离:仅 grokbuild 有会话根目录
     if provider_id != "grokbuild" {
-        return Err(format!("grok-switch 仅支持 Grok Build 会话,拒绝处理 {provider_id}"));
+        return Err(format!(
+            "grok-switch 仅支持 Grok Build 会话,拒绝处理 {provider_id}"
+        ));
     }
     Ok(grokbuild::session_roots())
 }

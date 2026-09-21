@@ -26,11 +26,8 @@ pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
 pub mod models;
 pub(crate) mod reasoning_bridge;
-pub mod streaming;
 pub mod streaming_codex_anthropic;
 pub mod streaming_codex_chat;
-pub mod streaming_gemini;
-pub mod streaming_responses;
 pub mod transform;
 pub mod transform_codex_anthropic;
 pub mod transform_codex_chat;
@@ -61,9 +58,8 @@ pub use codex::{
     apply_codex_chat_upstream_model, apply_codex_upstream_model, codex_provider_upstream_model,
     inject_codex_chat_prompt_cache_key, is_codex_official_provider,
     provider_needs_responses_namespace_flatten, resolve_codex_catalog_tool_profile,
-    resolve_grokbuild_upstream_model,
-    resolve_codex_chat_reasoning_config, should_convert_codex_responses_to_anthropic,
-    should_convert_codex_responses_to_chat,
+    resolve_codex_chat_reasoning_config, resolve_grokbuild_upstream_model,
+    should_convert_codex_responses_to_anthropic, should_convert_codex_responses_to_chat,
 };
 pub use gemini::GeminiAdapter;
 
@@ -213,6 +209,8 @@ impl ProviderType {
             AppType::Pi => return None,
             // omp 供应商不走本地代理（models.yml 直接生效）
             AppType::Omp => return None,
+            // agy 供应商不走本地代理（env 变量 + settings.json 直接生效）
+            AppType::Antigravity => return None,
         };
         Some(provider_type)
     }
@@ -271,6 +269,8 @@ pub fn get_adapter(app_type: &AppType) -> Option<Box<dyn ProviderAdapter>> {
         AppType::Pi => return None,
         // omp 供应商不走本地代理
         AppType::Omp => return None,
+        // agy 供应商不走本地代理
+        AppType::Antigravity => return None,
     })
 }
 

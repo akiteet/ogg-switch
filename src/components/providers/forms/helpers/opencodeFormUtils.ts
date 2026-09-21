@@ -56,17 +56,6 @@ export const OPENCODE_KNOWN_OPTION_KEYS = [
 export { REQUEST_HEADER_DRAFT_PREFIX as OPENCODE_HEADER_DRAFT_PREFIX } from "./requestHeaders";
 export const OPENCODE_EXTRA_OPTION_DRAFT_PREFIX = "draft-option:";
 
-export const OPENCLAW_DEFAULT_CONFIG = JSON.stringify(
-  {
-    baseUrl: "",
-    apiKey: "",
-    api: "openai-completions",
-    models: [],
-  },
-  null,
-  2,
-);
-
 // ── Pure functions ───────────────────────────────────────────────────
 
 export function isKnownOpencodeOptionKey(key: string): boolean {

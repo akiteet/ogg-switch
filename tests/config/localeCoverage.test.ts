@@ -32,8 +32,6 @@ const reference = flattenStrings(en);
 const piKeysOutsideNamespace = new Set([
   "apps.pi",
   "deeplink.api",
-  "sessionManager.piDiscoveryUnavailable",
-  "sessionManager.piRelativeSessionDir",
   "settings.browsePlaceholderPi",
   "settings.piConfigDir",
   "settings.piConfigDirDescription",

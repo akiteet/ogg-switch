@@ -19,6 +19,10 @@ const TEMPLATE_TYPE_BALANCE: &str = "balance";
 const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
 const COPILOT_UNIT_PREMIUM: &str = "requests";
 
+/// 允许通过通用供应商管理命令（add/update/delete）管理的 agent 白名单。
+/// 新增受管 agent 时在此追加（每个 agent 还需补齐 live.rs 三分支与前端表单）。
+const MANAGED_PROVIDER_APPS: &[&str] = &["grokbuild", "antigravity"];
+
 /// 获取所有供应商
 #[tauri::command]
 pub fn get_providers(
@@ -42,10 +46,11 @@ pub async fn add_provider(
     provider: Provider,
     #[allow(non_snake_case)] addToLive: Option<bool>,
 ) -> Result<bool, String> {
-    // grok-switch 硬隔离:供应商管理仅限 Grok Build,其他 Agent 一律拒绝
-    if app != "grokbuild" {
+    // 供应商管理白名单：仅受管 agent 可走通用增删改流程
+    if !MANAGED_PROVIDER_APPS.contains(&app.as_str()) {
         return Err(format!(
-            "grok-switch 仅支持 Grok Build 供应商管理,拒绝处理 {app}",
+            "ogg-switch 仅支持以下 agent 的供应商管理: {}，拒绝处理 {app}",
+            MANAGED_PROVIDER_APPS.join(", "),
         ));
     }
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
@@ -68,10 +73,11 @@ pub async fn update_provider(
     provider: Provider,
     #[allow(non_snake_case)] originalId: Option<String>,
 ) -> Result<bool, String> {
-    // grok-switch 硬隔离:供应商管理仅限 Grok Build,其他 Agent 一律拒绝
-    if app != "grokbuild" {
+    // 供应商管理白名单：仅受管 agent 可走通用增删改流程
+    if !MANAGED_PROVIDER_APPS.contains(&app.as_str()) {
         return Err(format!(
-            "grok-switch 仅支持 Grok Build 供应商管理,拒绝处理 {app}",
+            "ogg-switch 仅支持以下 agent 的供应商管理: {}，拒绝处理 {app}",
+            MANAGED_PROVIDER_APPS.join(", "),
         ));
     }
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
@@ -92,9 +98,12 @@ pub fn delete_provider(
     app: String,
     id: String,
 ) -> Result<bool, String> {
-    // grok-switch 硬隔离:仅限 Grok Build
-    if app != "grokbuild" {
-        return Err(format!("grok-switch 仅支持 Grok Build 供应商管理,拒绝处理 {app}"));
+    // 供应商管理白名单：仅受管 agent 可走通用增删改流程
+    if !MANAGED_PROVIDER_APPS.contains(&app.as_str()) {
+        return Err(format!(
+            "ogg-switch 仅支持以下 agent 的供应商管理: {}，拒绝处理 {app}",
+            MANAGED_PROVIDER_APPS.join(", "),
+        ));
     }
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     ProviderService::delete(state.inner(), app_type, &id)
@@ -187,6 +196,25 @@ fn import_default_config_internal(state: &AppState, app_type: AppType) -> Result
         ) {
             log::warn!("Failed to ensure grokbuild-official seed during import: {e}");
         }
+    }
+
+    if matches!(app_type, AppType::Antigravity) && !crate::antigravity_config::is_api_key_live() {
+        // Google 官方登录态（无 API key）：通用导入会因"无可导入内容"报错，
+        // 手动导入的正确结果是把官方条目补回并激活（对齐 GrokBuild 分支）。
+        // token 文件存在的账号导入走 antigravity 专用命令，不经此路径。
+        state.db.ensure_official_seed_by_id(
+            crate::database::ANTIGRAVITY_OFFICIAL_PROVIDER_ID,
+            AppType::Antigravity,
+        )?;
+        state.db.set_current_provider(
+            app_type.as_str(),
+            crate::database::ANTIGRAVITY_OFFICIAL_PROVIDER_ID,
+        )?;
+        crate::settings::set_current_provider(
+            &app_type,
+            Some(crate::database::ANTIGRAVITY_OFFICIAL_PROVIDER_ID),
+        )?;
+        return Ok(true);
     }
 
     let imported = ProviderService::import_default_config(state, app_type.clone())?;
@@ -325,6 +353,17 @@ pub fn ensure_grokbuild_official_provider(state: State<'_, AppState>) -> Result<
         .ensure_official_seed_by_id(
             crate::database::GROKBUILD_OFFICIAL_PROVIDER_ID,
             AppType::GrokBuild,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn ensure_antigravity_official_provider(state: State<'_, AppState>) -> Result<bool, String> {
+    state
+        .db
+        .ensure_official_seed_by_id(
+            crate::database::ANTIGRAVITY_OFFICIAL_PROVIDER_ID,
+            AppType::Antigravity,
         )
         .map_err(|e| e.to_string())
 }

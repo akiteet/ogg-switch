@@ -58,10 +58,7 @@ interface ToolVersion {
   wsl_distro: string | null;
 }
 
-const TOOL_NAMES = [
-  "grok",
-  "omp",
-] as const;
+const TOOL_NAMES = ["grok", "omp", "agy"] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 type ToolLifecycleAction = "install" | "update";
 
@@ -103,34 +100,30 @@ const ENV_BADGE_CONFIG: Record<
 const posixScriptInstallCommand = (url: string) =>
   `bash -c 'tmp=$(mktemp) && curl -fsSL ${url} -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'`;
 
-const HERMES_WINDOWS_INSTALL_SCRIPT =
+const HERMES_WINDOWS_INSTALL_COMMAND =
   "irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex";
-
-const powershellEncodedCommand = (script: string): string => {
-  let binary = "";
-  for (let i = 0; i < script.length; i += 1) {
-    const code = script.charCodeAt(i);
-    binary += String.fromCharCode(code & 0xff, code >> 8);
-  }
-  return btoa(binary);
-};
-
-const HERMES_WINDOWS_INSTALL_COMMAND = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncodedCommand(
-  HERMES_WINDOWS_INSTALL_SCRIPT,
-)}`;
 
 // Oh My Pi（OMP）官方安装脚本
 const OMP_WINDOWS_INSTALL_COMMAND = "irm https://omp.sh/install.ps1 | iex";
+const ANTIGRAVITY_WINDOWS_INSTALL_COMMAND =
+  "irm https://antigravity.google/cli/install.ps1 | iex";
+const ANTIGRAVITY_POSIX_INSTALL_COMMAND = posixScriptInstallCommand(
+  "https://antigravity.google/cli/install.sh",
+);
 const OMP_POSIX_INSTALL_COMMAND = "curl -fsSL https://omp.sh/install | sh";
 
-const POSIX_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
+const POSIX_ONE_CLICK_INSTALL_COMMANDS = `# Grok Build
+npm i -g @xai-official/grok@latest
+# Oh My Pi
+${OMP_POSIX_INSTALL_COMMAND}
+# Antigravity
+${ANTIGRAVITY_POSIX_INSTALL_COMMAND}
+# Claude Code
 ${posixScriptInstallCommand("https://claude.ai/install.sh")} || npm i -g @anthropic-ai/claude-code@latest
 # Codex
 npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
-# Grok Build
-npm i -g @xai-official/grok@latest
 # OpenCode
 ${posixScriptInstallCommand("https://opencode.ai/install")} || npm i -g opencode-ai@latest
 # OpenClaw
@@ -138,18 +131,20 @@ npm i -g openclaw@latest
 # Hermes
 ${posixScriptInstallCommand("https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh")}
 # Pi
-npm i -g @earendil-works/pi-coding-agent@latest
-# Oh My Pi
-${OMP_POSIX_INSTALL_COMMAND}`;
+npm i -g @earendil-works/pi-coding-agent@latest`;
 
-const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
+const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Grok Build
+npm i -g @xai-official/grok@latest
+# Oh My Pi
+${OMP_WINDOWS_INSTALL_COMMAND}
+# Antigravity
+${ANTIGRAVITY_WINDOWS_INSTALL_COMMAND}
+# Claude Code
 npm i -g @anthropic-ai/claude-code@latest
 # Codex
 npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
-# Grok Build
-npm i -g @xai-official/grok@latest
 # OpenCode
 npm i -g opencode-ai@latest
 # OpenClaw
@@ -157,9 +152,7 @@ npm i -g openclaw@latest
 # Hermes
 ${HERMES_WINDOWS_INSTALL_COMMAND}
 # Pi
-npm i -g @earendil-works/pi-coding-agent@latest
-# Oh My Pi
-${OMP_WINDOWS_INSTALL_COMMAND}`;
+npm i -g @earendil-works/pi-coding-agent@latest`;
 
 const ONE_CLICK_INSTALL_COMMANDS = isWindows()
   ? WINDOWS_ONE_CLICK_INSTALL_COMMANDS
@@ -171,6 +164,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   gemini: "Gemini CLI",
   grok: "Grok Build",
   omp: "Oh My Pi",
+  agy: "Antigravity",
   opencode: "OpenCode",
   openclaw: "OpenClaw",
   hermes: "Hermes",
@@ -189,6 +183,7 @@ const TOOL_APP_IDS: Record<string, AppId> = {
   gemini: "gemini",
   grok: "grokbuild",
   omp: "omp",
+  agy: "antigravity",
   opencode: "opencode",
   openclaw: "openclaw",
   hermes: "hermes",
@@ -479,7 +474,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       const outcome = await checkUpdate();
       if (outcome === "unsupported") {
         // 便携版/开发构建没有内置更新源：如实告知并带到发布页，而不是报错。
-        toast.info(t("settings.updateChannelUnavailable"), { closeButton: true });
+        toast.info(t("settings.updateChannelUnavailable"), {
+          closeButton: true,
+        });
         await settingsApi.openExternal(OGG_RELEASES_URL);
         return;
       }

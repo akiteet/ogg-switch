@@ -84,7 +84,8 @@ pub fn cleanup_stale_autostart_entries() {
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const STALE_MARKER: &str = r"\.grok-switch\autostart.vbs";
 
-    let hkcu = match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_READ | KEY_SET_VALUE)
+    let hkcu = match RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(RUN_KEY, KEY_READ | KEY_SET_VALUE)
     {
         Ok(k) => k,
         Err(e) => {
@@ -139,8 +140,8 @@ pub fn create_desktop_shortcut() -> Result<String, AppError> {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-        let desktop = dirs::desktop_dir()
-            .ok_or_else(|| AppError::Message("无法定位桌面目录".to_string()))?;
+        let desktop =
+            dirs::desktop_dir().ok_or_else(|| AppError::Message("无法定位桌面目录".to_string()))?;
         let lnk = desktop.join("OGG Switch.lnk");
         // WScript.Shell 生成 .lnk；PowerShell 单引号字符串里转义单引号。
         let target = exe_path.to_string_lossy().replace('\'', "''");
@@ -180,8 +181,8 @@ $s.Save()"
 
     #[cfg(target_os = "macos")]
     {
-        let desktop = dirs::desktop_dir()
-            .ok_or_else(|| AppError::Message("无法定位桌面目录".to_string()))?;
+        let desktop =
+            dirs::desktop_dir().ok_or_else(|| AppError::Message("无法定位桌面目录".to_string()))?;
         let bundle = get_macos_app_bundle_path(&exe_path).unwrap_or(exe_path);
         let link = desktop.join("OGG Switch.app");
         let _ = std::fs::remove_file(&link);
@@ -192,8 +193,8 @@ $s.Save()"
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let desktop = dirs::desktop_dir()
-            .ok_or_else(|| AppError::Message("无法定位桌面目录".to_string()))?;
+        let desktop =
+            dirs::desktop_dir().ok_or_else(|| AppError::Message("无法定位桌面目录".to_string()))?;
         let file = desktop.join("ogg-switch.desktop");
         let body = format!(
             "[Desktop Entry]\nType=Application\nName=OGG Switch\nExec={}\nIcon={}\nTerminal=false\n",
@@ -214,7 +215,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn test_get_macos_app_bundle_path_valid() {
-        let exe_path = std::path::Path::new("/Applications/OGG Switch.app/Contents/MacOS/OGG Switch");
+        let exe_path =
+            std::path::Path::new("/Applications/OGG Switch.app/Contents/MacOS/OGG Switch");
         let result = get_macos_app_bundle_path(exe_path);
         assert_eq!(
             result,

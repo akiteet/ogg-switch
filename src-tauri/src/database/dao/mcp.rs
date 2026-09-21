@@ -92,7 +92,12 @@ impl Database {
             AppType::Hermes => Some("enabled_hermes"),
             // These applications intentionally have no MCP flag in the SSOT.
             // omp 与上游 Pi 同源：无 MCP 注册表（实测 `omp mcp` 非子命令）。
-            AppType::ClaudeDesktop | AppType::OpenClaw | AppType::Pi | AppType::Omp => None,
+            // agy 亦无 MCP 注册表，v1 不接入。
+            AppType::ClaudeDesktop
+            | AppType::OpenClaw
+            | AppType::Pi
+            | AppType::Omp
+            | AppType::Antigravity => None,
         };
 
         if let Some(column) = column {

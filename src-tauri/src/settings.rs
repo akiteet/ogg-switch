@@ -51,6 +51,9 @@ pub struct VisibleApps {
     // Oh My Pi（OGG Switch）。缺省 true，老配置无此键也能显示。
     #[serde(default = "default_true")]
     pub omp: bool,
+    // Antigravity CLI（agy）。缺省 true，新 agent 默认可见。
+    #[serde(default = "default_true")]
+    pub antigravity: bool,
 }
 
 impl Default for VisibleApps {
@@ -66,6 +69,7 @@ impl Default for VisibleApps {
             hermes: false, // 默认不显示，需用户手动启用
             pi: false,
             omp: true,
+            antigravity: true,
         }
     }
 }
@@ -84,6 +88,7 @@ impl VisibleApps {
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
             AppType::Omp => self.omp,
+            AppType::Antigravity => self.antigravity,
         }
     }
 
@@ -440,6 +445,8 @@ pub struct AppSettings {
     pub hermes_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity_config_dir: Option<String>,
 
     // ===== 当前供应商 ID（设备级）=====
     /// 当前 Claude 供应商 ID（本地存储，优先于数据库 is_current）
@@ -466,6 +473,9 @@ pub struct AppSettings {
     /// 当前 Hermes 供应商 ID（本地存储，保持结构一致）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_hermes: Option<String>,
+    /// 当前 Antigravity 供应商 ID（本地存储，优先于数据库 is_current）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_provider_antigravity: Option<String>,
 
     // ===== Skill 同步设置 =====
     /// Skill 同步方式：auto（默认，优先 symlink）、symlink、copy
@@ -552,6 +562,7 @@ impl Default for AppSettings {
             openclaw_config_dir: None,
             hermes_config_dir: None,
             pi_config_dir: None,
+            antigravity_config_dir: None,
             current_provider_claude: None,
             current_provider_claude_desktop: None,
             current_provider_codex: None,
@@ -560,6 +571,7 @@ impl Default for AppSettings {
             current_provider_opencode: None,
             current_provider_openclaw: None,
             current_provider_hermes: None,
+            current_provider_antigravity: None,
             skill_sync_method: SyncMethod::default(),
             skill_storage_location: SkillStorageLocation::default(),
             webdav_sync: None,
@@ -970,6 +982,14 @@ pub fn get_pi_override_dir() -> Option<PathBuf> {
         .map(|path| resolve_override_path(path))
 }
 
+pub fn get_antigravity_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .antigravity_config_dir
+        .as_ref()
+        .map(|p| resolve_override_path(p))
+}
+
 pub fn preserve_codex_official_auth_on_switch() -> bool {
     settings_store()
         .read()
@@ -1011,6 +1031,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         // omp 的「当前供应商」由 config.yml:modelRoles.default 决定，
         // 不使用设备级 current_provider 设置。
         AppType::Omp => None,
+        AppType::Antigravity => settings.current_provider_antigravity.clone(),
     }
 }
 
@@ -1031,6 +1052,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
         AppType::Pi => {}
         AppType::Omp => {} // omp 当前供应商由 modelRoles.default 决定
+        AppType::Antigravity => settings.current_provider_antigravity = id_owned.clone(),
     })
 }
 

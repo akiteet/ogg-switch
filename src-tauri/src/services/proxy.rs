@@ -431,15 +431,6 @@ impl ProxyService {
         }
     }
 
-    #[cfg(test)]
-    fn apply_claude_takeover_fields(config: &mut Value, proxy_url: &str) {
-        Self::apply_claude_takeover_fields_with_policy(
-            config,
-            proxy_url,
-            ClaudeTakeoverAuthPolicy::PreserveExistingOrAuthToken,
-        );
-    }
-
     fn apply_claude_takeover_fields_for_provider(
         config: &mut Value,
         proxy_url: &str,
@@ -468,22 +459,6 @@ impl ProxyService {
         } else {
             Self::build_claude_takeover_model_fields(config)
         };
-
-        Self::apply_claude_takeover_fields_with_policy_and_models(
-            config,
-            proxy_url,
-            auth_policy,
-            takeover_model_fields,
-        );
-    }
-
-    fn apply_claude_takeover_fields_with_policy(
-        config: &mut Value,
-        proxy_url: &str,
-        auth_policy: ClaudeTakeoverAuthPolicy,
-    ) {
-        // 必须在 remove/insert 前 snapshot：避免读到自己刚写入的接管别名。
-        let takeover_model_fields = Self::build_claude_takeover_model_fields(config);
 
         Self::apply_claude_takeover_fields_with_policy_and_models(
             config,
@@ -2091,8 +2066,7 @@ impl ProxyService {
                     .await
             }
             _ => Err(
-                "Grok Switch 仅支持 Grok Build (Grok Switch only supports Grok Build)"
-                    .to_string(),
+                "Grok Switch 仅支持 Grok Build (Grok Switch only supports Grok Build)".to_string(),
             ),
         }
     }
@@ -4639,33 +4613,6 @@ mod tests {
         assert_env_str(env, "ANTHROPIC_AUTH_TOKEN", None);
     }
 
-    #[test]
-    fn normal_claude_takeover_without_token_keeps_auth_token_fallback() {
-        let mut live_config = json!({
-            "env": {
-                "ANTHROPIC_BASE_URL": "https://api.example.com",
-                "ANTHROPIC_MODEL": "claude-haiku-4.5"
-            }
-        });
-
-        ProxyService::apply_claude_takeover_fields(&mut live_config, "http://127.0.0.1:15721");
-
-        assert_eq!(
-            live_config
-                .get("env")
-                .and_then(|env| env.get("ANTHROPIC_AUTH_TOKEN"))
-                .and_then(|value| value.as_str()),
-            Some(PROXY_TOKEN_PLACEHOLDER)
-        );
-        assert!(
-            live_config
-                .get("env")
-                .and_then(|env| env.get("ANTHROPIC_API_KEY"))
-                .is_none(),
-            "non-managed providers should retain the legacy fallback behavior"
-        );
-    }
-
     #[tokio::test]
     #[serial]
     async fn update_config_reprojection_waits_for_codex_switch_lock_before_rebuilding_live_auth() {
@@ -6246,56 +6193,50 @@ model = "gpt-5.1-codex"
         let service = ProxyService::new(db.clone());
 
         let provider_a = Provider::with_id(
-            "a".to_string(),
-            "A".to_string(),
-            json!({
-                "env": {
-                    "ANTHROPIC_API_KEY": "a-key"
-                }
-            }),
+            "grok-a".to_string(),
+            "Grok A".to_string(),
+            grok_provider_config("https://a.example.com/v1", "a-key"),
             None,
         );
         let provider_b = Provider::with_id(
-            "b".to_string(),
-            "B".to_string(),
-            json!({
-                "env": {
-                    "ANTHROPIC_API_KEY": "b-key"
-                }
-            }),
+            "grok-b".to_string(),
+            "Grok B".to_string(),
+            grok_provider_config("https://b.example.com/v1", "b-key"),
             None,
         );
-        db.save_provider("claude", &provider_a)
+        db.save_provider("grokbuild", &provider_a)
             .expect("save provider a");
-        db.save_provider("claude", &provider_b)
+        db.save_provider("grokbuild", &provider_b)
             .expect("save provider b");
-        db.set_current_provider("claude", "a")
+        db.set_current_provider("grokbuild", "grok-a")
             .expect("set current provider");
 
         // 模拟"已接管"状态：存在 Live 备份（内容不重要，会被热切换更新）
-        db.save_live_backup("claude", "{\"env\":{}}")
+        db.save_live_backup("grokbuild", "{}")
             .await
             .expect("seed live backup");
 
         service
-            .switch_proxy_target("claude", "b")
+            .switch_proxy_target("grokbuild", "grok-b")
             .await
             .expect("switch proxy target");
 
         // 断言：本地 settings 的 current provider 已同步
         assert_eq!(
-            crate::settings::get_current_provider(&AppType::Claude).as_deref(),
-            Some("b")
+            crate::settings::get_current_provider(&AppType::GrokBuild).as_deref(),
+            Some("grok-b")
         );
 
-        // 断言：Live 备份已更新为目标供应商配置（用于 stop_with_restore 恢复）
+        // 断言：Live 备份已更新为切换后的供应商配置（stop_with_restore 靠它恢复）
         let backup = db
-            .get_live_backup("claude")
+            .get_live_backup("grokbuild")
             .await
             .expect("get live backup")
             .expect("backup exists");
-        let expected = serde_json::to_string(&provider_b.settings_config).expect("serialize");
-        assert_eq!(backup.original_config, expected);
+        assert!(
+            backup.original_config.contains("https://b.example.com/v1"),
+            "live backup should point at the switched-in provider"
+        );
     }
 
     #[tokio::test]

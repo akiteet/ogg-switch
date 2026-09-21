@@ -22,14 +22,6 @@ import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { useDragSort } from "@/hooks/useDragSort";
-import {
-  useOpenClawLiveProviderIds,
-  useOpenClawDefaultModel,
-} from "@/hooks/useOpenClaw";
-import {
-  useHermesLiveProviderIds,
-  useHermesModelConfig,
-} from "@/hooks/useHermes";
 import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
@@ -69,7 +61,6 @@ interface ProviderListProps {
   isProxyRunning?: boolean; // 代理服务运行状态
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管）
   activeProviderId?: string; // 代理当前实际使用的供应商 ID（用于故障转移模式下标注绿色边框）
-  onSetAsDefault?: (provider: Provider, modelId?: string) => void; // OpenClaw: set as default model
 }
 
 export function ProviderList({
@@ -91,7 +82,6 @@ export function ProviderList({
   isProxyRunning = false,
   isProxyTakeover = false,
   activeProviderId,
-  onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
   const { checkProvider, isChecking } = useStreamCheck(appId);
@@ -106,29 +96,11 @@ export function ProviderList({
     enabled: appId === "opencode",
   });
 
-  // OpenClaw: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
-  const { data: openclawLiveIds } = useOpenClawLiveProviderIds(
-    appId === "openclaw",
-  );
-
-  // Hermes: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
-  const { data: hermesLiveIds } = useHermesLiveProviderIds(appId === "hermes");
-
-  // Hermes: 读取当前 model.provider，用于判断哪个供应商是"当前激活"（高亮）
-  const { data: hermesModelConfig } = useHermesModelConfig(appId === "hermes");
-  const hermesCurrentProviderId = hermesModelConfig?.provider;
-
-  // 判断供应商是否已添加到配置（累加模式应用：OpenCode/OpenClaw/Hermes/omp）
+  // 判断供应商是否已添加到配置（累加模式应用：OpenCode/Pi/omp）
   const isProviderInConfig = useCallback(
     (providerId: string): boolean => {
       if (appId === "opencode") {
         return opencodeLiveIds?.includes(providerId) ?? false;
-      }
-      if (appId === "openclaw") {
-        return openclawLiveIds?.includes(providerId) ?? false;
-      }
-      if (appId === "hermes") {
-        return hermesLiveIds?.includes(providerId) ?? false;
       }
       // omp：后端按条目标记（live yml / OAuth 合成 = true；meta 库快照 = false）
       if (appId === "omp") {
@@ -136,20 +108,7 @@ export function ProviderList({
       }
       return true; // 其他应用始终返回 true
     },
-    [appId, opencodeLiveIds, openclawLiveIds, hermesLiveIds, providers],
-  );
-
-  // OpenClaw: query default model to determine which provider is default
-  const { data: openclawDefaultModel } = useOpenClawDefaultModel(
-    appId === "openclaw",
-  );
-
-  const isProviderDefaultModel = useCallback(
-    (providerId: string): boolean => {
-      if (appId !== "openclaw" || !openclawDefaultModel?.primary) return false;
-      return openclawDefaultModel.primary.startsWith(providerId + "/");
-    },
-    [appId, openclawDefaultModel],
+    [appId, opencodeLiveIds, providers],
   );
 
   // Only apps with an explicit local-routing capability participate in
@@ -242,17 +201,47 @@ export function ProviderList({
         const count = await providersApi.importOpenCodeFromLive();
         return count > 0;
       }
-      if (appId === "openclaw") {
-        const count = await providersApi.importOpenClawFromLive();
-        return count > 0;
-      }
-      if (appId === "hermes") {
-        const count = await providersApi.importHermesFromLive();
-        return count > 0;
-      }
       if (appId === "claude-desktop") {
         const count = await providersApi.importClaudeDesktopFromClaude();
         return count > 0;
+      }
+      if (appId === "antigravity") {
+        // agy 导入按钮可重复使用：api-key 态一次性导入 default；
+        // Google 登录态按 token 指纹导入账号（终端 agy 登录后点导入）
+        const result = await providersApi.importAntigravityFromLive();
+        switch (result.outcome) {
+          case "imported-api-key":
+            toast.success(
+              t("provider.antigravity.importedApiKey", {
+                defaultValue: "已导入当前 API Key 配置",
+              }),
+            );
+            return true;
+          case "imported-account":
+            toast.success(
+              t("provider.antigravity.importedAccount", {
+                defaultValue: "已导入当前 Google 登录账号",
+              }),
+            );
+            return true;
+          case "account-updated":
+            toast.success(
+              t("provider.antigravity.accountUpdated", {
+                defaultValue: "该账号已存在，登录凭据快照已刷新",
+              }),
+            );
+            return true;
+          default:
+            if (result.diagnostics) {
+              toast.error(
+                t("provider.antigravity.importFailed", {
+                  defaultValue: "未检测到可导入的 Google 登录凭据",
+                }),
+                { description: result.diagnostics, duration: 8000 },
+              );
+            }
+            return false;
+        }
       }
       return providersApi.importDefault(appId);
     },
@@ -445,8 +434,6 @@ export function ProviderList({
             const isOmoCurrent = isOmo && provider.id === (currentOmoId || "");
             const isOmoSlimCurrent =
               isOmoSlim && provider.id === (currentOmoSlimId || "");
-            const isHermesCurrent =
-              appId === "hermes" && hermesCurrentProviderId === provider.id;
             const isCurrent =
               appId === "pi" || appId === "omp"
                 ? false
@@ -454,9 +441,7 @@ export function ProviderList({
                   ? isOmoCurrent
                   : isOmoSlim
                     ? isOmoSlimCurrent
-                    : appId === "hermes"
-                      ? isHermesCurrent
-                      : provider.id === currentProviderId;
+                    : provider.id === currentProviderId;
             return (
               <SortableProviderCard
                 key={provider.id}
@@ -498,27 +483,8 @@ export function ProviderList({
                 activeProviderId={
                   supportsFailover ? activeProviderId : undefined
                 }
-                isDefaultModel={
-                  appId === "hermes"
-                    ? isHermesCurrent
-                    : isProviderDefaultModel(provider.id)
-                }
-                isRemovalProtected={
-                  appId === "pi"
-                    ? false
-                    : appId === "hermes"
-                      ? isHermesCurrent
-                      : appId === "openclaw"
-                        ? isProviderDefaultModel(provider.id)
-                        : false
-                }
                 isStateChangeProtected={
                   appId === "pi" && !isPiAuthoritativeStateReady
-                }
-                onSetAsDefault={
-                  onSetAsDefault
-                    ? (modelId) => onSetAsDefault(provider, modelId)
-                    : undefined
                 }
               />
             );
@@ -651,11 +617,7 @@ interface SortableProviderCardProps {
   isInFailoverQueue: boolean;
   onToggleFailover?: (enabled: boolean) => void;
   activeProviderId?: string;
-  // OpenClaw: default model
-  isDefaultModel?: boolean;
-  isRemovalProtected?: boolean;
   isStateChangeProtected?: boolean;
-  onSetAsDefault?: (modelId?: string) => void;
 }
 
 function SortableProviderCard({
@@ -685,10 +647,7 @@ function SortableProviderCard({
   isInFailoverQueue,
   onToggleFailover,
   activeProviderId,
-  isDefaultModel,
-  isRemovalProtected,
   isStateChangeProtected,
-  onSetAsDefault,
 }: SortableProviderCardProps) {
   const {
     setNodeRef,
@@ -740,11 +699,7 @@ function SortableProviderCard({
         isInFailoverQueue={isInFailoverQueue}
         onToggleFailover={onToggleFailover}
         activeProviderId={activeProviderId}
-        // OpenClaw: default model
-        isDefaultModel={isDefaultModel}
-        isRemovalProtected={isRemovalProtected}
         isStateChangeProtected={isStateChangeProtected}
-        onSetAsDefault={onSetAsDefault}
       />
     </div>
   );

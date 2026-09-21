@@ -21,6 +21,29 @@ export interface SwitchResult {
   warnings: string[];
 }
 
+/** Antigravity 专用导入命令的结果（与后端 AntigravityImportOutcome 对应） */
+export interface AntigravityImportOutcome {
+  outcome:
+    | "imported-api-key"
+    | "imported-account"
+    | "account-updated"
+    | "skipped"
+    | "not-found";
+  providerId?: string | null;
+  accountId?: string | null;
+  /** 找不到凭据时的探测明细 */
+  diagnostics?: string | null;
+}
+
+export interface AntigravityAccount {
+  id: string;
+  name: string;
+  email?: string | null;
+  isCurrent: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface OpenTerminalOptions {
   cwd?: string;
 }
@@ -111,6 +134,26 @@ export const providersApi = {
     return await invoke("ensure_grokbuild_official_provider");
   },
 
+  async ensureAntigravityOfficialProvider(): Promise<boolean> {
+    return await invoke("ensure_antigravity_official_provider");
+  },
+
+  async importAntigravityFromLive(): Promise<AntigravityImportOutcome> {
+    return await invoke("import_antigravity_from_live");
+  },
+
+  async listAntigravityAccounts(): Promise<AntigravityAccount[]> {
+    return await invoke("list_antigravity_accounts");
+  },
+
+  async switchAntigravityAccount(id: string): Promise<boolean> {
+    return await invoke("switch_antigravity_account", { id });
+  },
+
+  async deleteAntigravityAccount(id: string): Promise<boolean> {
+    return await invoke("delete_antigravity_account", { id });
+  },
+
   async getClaudeDesktopStatus(): Promise<ClaudeDesktopStatus> {
     return await invoke("get_claude_desktop_status");
   },
@@ -171,38 +214,6 @@ export const providersApi = {
    */
   async getOpenCodeLiveProviderIds(): Promise<string[]> {
     return await invoke("get_opencode_live_provider_ids");
-  },
-
-  /**
-   * 获取 OpenClaw live 配置中的供应商 ID 列表
-   * 用于前端判断供应商是否已添加到 openclaw.json
-   */
-  async getOpenClawLiveProviderIds(): Promise<string[]> {
-    return await invoke("get_openclaw_live_provider_ids");
-  },
-
-  /**
-   * 获取 Hermes live 配置中的供应商 ID 列表
-   * 用于前端判断供应商是否已添加到 Hermes 配置
-   */
-  async getHermesLiveProviderIds(): Promise<string[]> {
-    return await invoke("get_hermes_live_provider_ids");
-  },
-
-  /**
-   * 从 OpenClaw live 配置导入供应商到数据库
-   * OpenClaw 特有功能：由于累加模式，用户可能已在 openclaw.json 中配置供应商
-   */
-  async importOpenClawFromLive(): Promise<number> {
-    return await invoke("import_openclaw_providers_from_live");
-  },
-
-  /**
-   * 从 Hermes live 配置导入供应商到数据库
-   * Hermes 特有功能：由于累加模式，用户可能已在 Hermes 配置中配置供应商
-   */
-  async importHermesFromLive(): Promise<number> {
-    return await invoke("import_hermes_providers_from_live");
   },
 };
 

@@ -470,7 +470,10 @@ pub fn codex_provider_upstream_model(provider: &Provider) -> Option<String> {
 /// (它只认 modelCatalog,而 grok 供应商没有 catalog),请求模型会被无条件
 /// 覆盖成默认条目 —— /model 就成了假切换。这里以请求为准:命中任意条目即用
 /// 该条目的上游模型,未命中才回落到默认条目。
-pub fn resolve_grokbuild_upstream_model(provider: &Provider, request_model: &str) -> Option<String> {
+pub fn resolve_grokbuild_upstream_model(
+    provider: &Provider,
+    request_model: &str,
+) -> Option<String> {
     let request_model = request_model.trim();
     let config_toml = provider
         .settings_config

@@ -101,7 +101,6 @@ fn validate_codex_official_authorization(
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
-    pub claude_api_format: Option<String>,
     /// 实际发往上游的模型名（路由接管/模型映射后的真值）。
     ///
     /// usage 归因不能依赖 ctx.request_model（映射前的客户端别名）：上游响应
@@ -538,7 +537,7 @@ impl RequestForwarder {
                 )
                 .await
             {
-                Ok((response, claude_api_format, outbound_model)) => {
+                Ok((response, _claude_api_format, outbound_model)) => {
                     // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
                     // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
                     self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
@@ -585,7 +584,6 @@ impl RequestForwarder {
                     return Ok(ForwardResult {
                         response,
                         provider: provider.clone(),
-                        claude_api_format,
                         outbound_model,
                         connection_guard: None,
                     });
@@ -637,7 +635,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, outbound_model)) => {
+                                Ok((response, _claude_api_format, outbound_model)) => {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
                                     );
@@ -688,7 +686,6 @@ impl RequestForwarder {
                                     return Ok(ForwardResult {
                                         response,
                                         provider: provider.clone(),
-                                        claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
                                     });
@@ -783,7 +780,7 @@ impl RequestForwarder {
                                     )
                                     .await
                                 {
-                                    Ok((response, claude_api_format, outbound_model)) => {
+                                    Ok((response, _claude_api_format, outbound_model)) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         self.record_success_result(
                                             &provider.id,
@@ -837,7 +834,6 @@ impl RequestForwarder {
                                         return Ok(ForwardResult {
                                             response,
                                             provider: provider.clone(),
-                                            claude_api_format,
                                             outbound_model,
                                             connection_guard: None,
                                         });
@@ -949,7 +945,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, outbound_model)) => {
+                                Ok((response, _claude_api_format, outbound_model)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     self.record_success_result(
                                         &provider.id,
@@ -997,7 +993,6 @@ impl RequestForwarder {
                                     return Ok(ForwardResult {
                                         response,
                                         provider: provider.clone(),
-                                        claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
                                     });
@@ -1269,10 +1264,9 @@ impl RequestForwarder {
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string();
-            if let Some(upstream) = super::providers::resolve_grokbuild_upstream_model(
-                provider,
-                &request_model,
-            ) {
+            if let Some(upstream) =
+                super::providers::resolve_grokbuild_upstream_model(provider, &request_model)
+            {
                 mapped_body["model"] = serde_json::Value::String(upstream);
             }
         }

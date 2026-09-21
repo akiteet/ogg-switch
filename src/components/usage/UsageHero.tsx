@@ -1,8 +1,10 @@
 import { cloneElement, isValidElement } from "react";
 import { useTranslation } from "react-i18next";
+import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
 import { useUsageSummaryByApp } from "@/lib/query/usage";
+import { usageApi } from "@/lib/api/usage";
 import { cn } from "@/lib/utils";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import type { AppId } from "@/lib/api/types";
@@ -76,6 +78,10 @@ const TITLE_THEMES: Record<AppType | "all", TitleTheme> = {
   pi: {
     accent: "text-fuchsia-600 dark:text-fuchsia-400",
     iconBg: "bg-fuchsia-500/10",
+  },
+  antigravity: {
+    accent: "text-sky-600 dark:text-sky-400",
+    iconBg: "bg-sky-500/10",
   },
 };
 
@@ -214,6 +220,13 @@ export function UsageHero({
           : undefined,
   };
 
+  const { data: ompQuota = [] } = useQuery({
+    queryKey: ["ompQuotaWindows"],
+    queryFn: () => usageApi.getOmpQuotaWindows(),
+    enabled: appType === "omp" && requests === 0,
+    staleTime: 30_000,
+  });
+
   if (isLoading) {
     return (
       <Card className="border border-border/50 bg-card/40 backdrop-blur-sm">
@@ -223,6 +236,31 @@ export function UsageHero({
       </Card>
     );
   }
+
+  const ompQuotaHint =
+    appType === "omp" && requests === 0 && ompQuota.length > 0
+      ? ompQuota
+          .slice(0, 4)
+          .map((row) => {
+            const pct = Math.round(row.usedFraction * 1000) / 10;
+            const label = row.label ? ` (${row.label})` : "";
+            return `${row.provider || "quota"}${label} ${pct}%`;
+          })
+          .join(" · ")
+      : null;
+  const noLocalTokensHint =
+    requests === 0 && (appType === "antigravity" || appType === "omp")
+      ? appType === "antigravity"
+        ? t(
+            "usage.antigravityNoLocalTokens",
+            "agy 会话用量来自本地会话数据库；还没有记录时这里为空。",
+          )
+        : ompQuotaHint ||
+          t(
+            "usage.ompNoLocalTokens",
+            "OMP 尚无本地会话用量记录；配额窗口不会记入 token 用量。",
+          )
+      : null;
 
   const hitPercent = Math.max(0, Math.min(100, hitRate * 100));
   const hitPercentLabel = hitPercent.toFixed(hitPercent >= 99.95 ? 0 : 1);
@@ -261,6 +299,11 @@ export function UsageHero({
                     )}
                     {t("usage.realTotal", "真实消耗 Tokens")}
                   </div>
+                  {noLocalTokensHint && (
+                    <p className="mt-1 max-w-xl text-xs text-muted-foreground">
+                      {noLocalTokensHint}
+                    </p>
+                  )}
                   <div className="flex items-baseline gap-2">
                     <span
                       className="text-2xl md:text-3xl font-bold tabular-nums tracking-tight leading-none"

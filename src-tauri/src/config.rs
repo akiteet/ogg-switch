@@ -847,12 +847,3 @@ pub struct ConfigStatus {
     pub exists: bool,
     pub path: String,
 }
-
-/// 获取 Claude Code 配置状态
-pub fn get_claude_config_status() -> ConfigStatus {
-    let path = get_claude_settings_path();
-    ConfigStatus {
-        exists: path.exists(),
-        path: path.to_string_lossy().to_string(),
-    }
-}

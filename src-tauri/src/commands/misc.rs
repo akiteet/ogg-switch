@@ -113,16 +113,8 @@ pub struct ToolVersion {
     wsl_distro: Option<String>,
 }
 
-const VALID_TOOLS: [&str; 9] = [
-    "claude",
-    "codex",
-    "gemini",
-    "grok",
-    "omp",
-    "opencode",
-    "openclaw",
-    "hermes",
-    "pi",
+const VALID_TOOLS: [&str; 10] = [
+    "claude", "codex", "gemini", "grok", "omp", "agy", "opencode", "openclaw", "hermes", "pi",
 ];
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -441,6 +433,7 @@ fn tool_display_name(tool: &str) -> &'static str {
         "gemini" => "Gemini CLI",
         "grok" => "Grok Build",
         "omp" => "Oh My Pi",
+        "agy" => "Antigravity",
         "opencode" => "OpenCode",
         "openclaw" => "OpenClaw",
         "hermes" => "Hermes",
@@ -478,6 +471,20 @@ const HERMES_INSTALL_WINDOWS_SCRIPT: &str =
     "irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex";
 #[cfg(target_os = "windows")]
 const GROK_INSTALL_WINDOWS_SCRIPT: &str = "irm https://x.ai/cli/install.ps1 | iex";
+/// Antigravity CLI（agy）官方安装脚本
+const ANTIGRAVITY_INSTALL_UNIX: &str =
+    "bash -c 'tmp=$(mktemp) && curl -fsSL https://antigravity.google/cli/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
+#[cfg(target_os = "windows")]
+const ANTIGRAVITY_INSTALL_WINDOWS_SCRIPT: &str =
+    "irm https://antigravity.google/cli/install.ps1 | iex";
+
+#[cfg(target_os = "windows")]
+fn antigravity_install_windows_command() -> String {
+    format!(
+        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {}",
+        powershell_encoded_command(ANTIGRAVITY_INSTALL_WINDOWS_SCRIPT)
+    )
+}
 #[cfg(target_os = "windows")]
 const OMP_INSTALL_WINDOWS_SCRIPT: &str = "irm https://omp.sh/install.ps1 | iex";
 
@@ -611,34 +618,62 @@ fn tool_action_shell_command_for_shell(
         );
     }
 
+    // Antigravity CLI：官方 installer 安装（无 npm 包）；更新回落到官方 installer。
+    if tool == "agy" {
+        return Some(
+            match (action, shell) {
+                (ToolLifecycleAction::Install, LifecycleCommandShell::Posix) => {
+                    ANTIGRAVITY_INSTALL_UNIX
+                }
+                #[cfg(target_os = "windows")]
+                (ToolLifecycleAction::Install, LifecycleCommandShell::WindowsBatch) => {
+                    return Some(antigravity_install_windows_command());
+                }
+                #[cfg(not(target_os = "windows"))]
+                (_, LifecycleCommandShell::WindowsBatch) => return None,
+                // 更新：官方未声明自升级子命令，直接重跑 installer。
+                (ToolLifecycleAction::Update, LifecycleCommandShell::Posix) => {
+                    return Some(ANTIGRAVITY_INSTALL_UNIX.to_string());
+                }
+                #[cfg(target_os = "windows")]
+                (ToolLifecycleAction::Update, LifecycleCommandShell::WindowsBatch) => {
+                    return Some(antigravity_install_windows_command());
+                }
+            }
+            .to_string(),
+        );
+    }
+
     // Oh My Pi：官方 installer 安装，无 npm 兜底（与 hermes 同理）。
     if tool == "omp" {
-        return Some(match (action, shell) {
-            (ToolLifecycleAction::Install, LifecycleCommandShell::Posix) => OMP_INSTALL_UNIX,
-            #[cfg(target_os = "windows")]
-            (ToolLifecycleAction::Install, LifecycleCommandShell::WindowsBatch) => {
-                return Some(omp_install_windows_command());
+        return Some(
+            match (action, shell) {
+                (ToolLifecycleAction::Install, LifecycleCommandShell::Posix) => OMP_INSTALL_UNIX,
+                #[cfg(target_os = "windows")]
+                (ToolLifecycleAction::Install, LifecycleCommandShell::WindowsBatch) => {
+                    return Some(omp_install_windows_command());
+                }
+                #[cfg(not(target_os = "windows"))]
+                (_, LifecycleCommandShell::WindowsBatch) => return None,
+                // 更新：优先让 CLI 自升级，再回落到官方 installer。
+                (ToolLifecycleAction::Update, LifecycleCommandShell::Posix) => {
+                    return Some(chain_update_commands(
+                        "omp update".to_string(),
+                        OMP_INSTALL_UNIX.to_string(),
+                        shell,
+                    ));
+                }
+                #[cfg(target_os = "windows")]
+                (ToolLifecycleAction::Update, LifecycleCommandShell::WindowsBatch) => {
+                    return Some(chain_update_commands(
+                        "omp update".to_string(),
+                        omp_install_windows_command(),
+                        shell,
+                    ));
+                }
             }
-            #[cfg(not(target_os = "windows"))]
-            (_, LifecycleCommandShell::WindowsBatch) => return None,
-            // 更新：优先让 CLI 自升级，再回落到官方 installer。
-            (ToolLifecycleAction::Update, LifecycleCommandShell::Posix) => {
-                return Some(chain_update_commands(
-                    "omp update".to_string(),
-                    OMP_INSTALL_UNIX.to_string(),
-                    shell,
-                ));
-            }
-            #[cfg(target_os = "windows")]
-            (ToolLifecycleAction::Update, LifecycleCommandShell::WindowsBatch) => {
-                return Some(chain_update_commands(
-                    "omp update".to_string(),
-                    omp_install_windows_command(),
-                    shell,
-                ));
-            }
-        }
-        .to_string());
+            .to_string(),
+        );
     }
 
     let install = npm_install_command_for(tool)?;
@@ -891,6 +926,7 @@ async fn get_single_tool_version_impl(
         "pi" => {
             fetch_npm_latest_for_tool(&client, "@earendil-works/pi-coding-agent", tool, local).await
         }
+        "agy" => fetch_agy_latest_version(&client, local).await,
         _ => None,
     };
 
@@ -1100,6 +1136,42 @@ fn drop_latest_behind_local(latest: Option<String>, local_version: Option<&str>)
 /// 自 0.19.0（2026-07-20）起停更，上游只在 GitHub Releases 发版
 /// （#6475 / #6618 / #7033：「最新版本」长期停在 0.19.0、比当前还旧、升级按钮不出现）。
 /// 仅当 GitHub 不可达或被限流时才退到 PyPI，且该值已被本地超过时不展示，宁可显示未知。
+/// agy 没有 npm / GitHub Releases；官方安装脚本从自动更新服务的 release manifest
+/// 取版本，这里直接读同一份 manifest。
+async fn fetch_agy_latest_version(
+    client: &reqwest::Client,
+    local_version: Option<&str>,
+) -> Option<String> {
+    const MANIFEST_BASE: &str =
+        "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests";
+    let platforms: &[&str] = if cfg!(target_os = "windows") {
+        &["windows_amd64", "windows_arm64"]
+    } else if cfg!(target_os = "macos") {
+        &["darwin_arm64", "darwin_amd64"]
+    } else {
+        &["linux_amd64", "linux_arm64"]
+    };
+    for platform in platforms {
+        let url = format!("{MANIFEST_BASE}/{platform}.json");
+        let Ok(resp) = client.get(&url).timeout(LATEST_PROBE_TIMEOUT).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(json) = resp.json::<serde_json::Value>().await else {
+            continue;
+        };
+        if let Some(version) = json.get("version").and_then(|v| v.as_str()) {
+            return drop_latest_behind_local(Some(version.to_string()), local_version);
+        }
+    }
+    drop_latest_behind_local(
+        fetch_github_latest_version(client, "google-antigravity/antigravity-cli").await,
+        local_version,
+    )
+}
+
 async fn fetch_hermes_latest_version(
     client: &reqwest::Client,
     local_version: Option<&str>,
@@ -1821,6 +1893,14 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
         let extra_paths = grok_extra_search_paths(&home, std::env::var_os("GROK_BIN_DIR"));
         for path in extra_paths {
             push_unique_path(&mut search_paths, path);
+        }
+    }
+    if tool == "agy" {
+        // Antigravity CLI 的 Windows 官方脚本装在 %LOCALAPPDATA%agyin；
+        // Unix 落在 ~/.local/bin（通用扫描已覆盖）。
+        #[cfg(target_os = "windows")]
+        if let Some(local_data) = dirs::data_local_dir() {
+            push_unique_path(&mut search_paths, local_data.join("agy").join("bin"));
         }
     }
     if tool == "omp" {
@@ -4685,6 +4765,7 @@ fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), S
 ///
 /// **Security**：`command_line` 会被原样拼进 shell/batch 脚本，调用方必须
 /// 保证它是可信字符串（当前只由后端硬编码调用）。
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(crate) fn launch_terminal_running(command_line: &str, label: &str) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
     let pid = std::process::id();

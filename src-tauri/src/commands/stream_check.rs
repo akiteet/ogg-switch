@@ -66,29 +66,28 @@ pub async fn stream_check_all_providers(
     proxy_targets_only: bool,
 ) -> Result<Vec<(String, StreamCheckResult)>, AppError> {
     let config = state.db.get_stream_check_config()?;
-    let providers: Vec<(String, crate::provider::Provider)> =
-        if matches!(app_type, AppType::Omp) {
-            crate::commands::omp::get_all_omp_providers()
-                .await
-                .map_err(AppError::Message)?
-                .into_iter()
-                // OAuth 供应商无 baseUrl（凭据由 omp auth-broker 管理），没有可探测
-                // 目标，与 official 供应商一样跳过，不做无意义探测
-                .filter(|p| {
-                    p.base_url
-                        .as_deref()
-                        .map(|s| !s.trim().is_empty())
-                        .unwrap_or(false)
-                })
-                .map(|p| (p.id.clone(), omp_provider_to_check_provider(p)))
-                .collect()
-        } else {
-            state
-                .db
-                .get_all_providers(app_type.as_str())?
-                .into_iter()
-                .collect()
-        };
+    let providers: Vec<(String, crate::provider::Provider)> = if matches!(app_type, AppType::Omp) {
+        crate::commands::omp::get_all_omp_providers()
+            .await
+            .map_err(AppError::Message)?
+            .into_iter()
+            // OAuth 供应商无 baseUrl（凭据由 omp auth-broker 管理），没有可探测
+            // 目标，与 official 供应商一样跳过，不做无意义探测
+            .filter(|p| {
+                p.base_url
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+            })
+            .map(|p| (p.id.clone(), omp_provider_to_check_provider(p)))
+            .collect()
+    } else {
+        state
+            .db
+            .get_all_providers(app_type.as_str())?
+            .into_iter()
+            .collect()
+    };
 
     let allowed_ids: Option<HashSet<String>> = if proxy_targets_only {
         let mut ids = HashSet::new();

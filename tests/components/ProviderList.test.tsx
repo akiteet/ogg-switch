@@ -393,7 +393,6 @@ describe("ProviderList Component", () => {
       expect(inactiveCards).not.toHaveLength(0);
       expect(currentCards.at(-1)).toMatchObject({
         isCurrent: false,
-        isRemovalProtected: false,
         isProxyRunning: false,
         isProxyTakeover: false,
         isAutoFailoverEnabled: false,
@@ -405,6 +404,7 @@ describe("ProviderList Component", () => {
         isProxyRunning: false,
         isProxyTakeover: false,
       });
+      expect(currentCards.at(-1)).not.toHaveProperty("isRemovalProtected");
       expect(currentCards.at(-1)).not.toHaveProperty("piCurrentRoute");
     });
   });
@@ -449,7 +449,6 @@ describe("ProviderList Component", () => {
       expect(latestCardProps).toMatchObject({
         isCurrent: false,
         isInConfig: true,
-        isRemovalProtected: false,
         isStateChangeProtected: false,
       });
     });

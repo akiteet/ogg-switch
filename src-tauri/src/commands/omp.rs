@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{get_app_config_dir, get_home_dir};
+use crate::services::session_usage_omp::OmpQuotaWindow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +49,10 @@ pub struct OmpProviderConfig {
     ///（meta.config 快照，显示「添加」按钮）。仅存在于 GUI 传输层，不写 models.yml。
     #[serde(default)]
     pub in_config: bool,
+    /// 用量查询脚本配置。真源在 OGG meta store（与 sort_index 同理），
+    /// 经 load_live_config 合入传输层；不写 models.yml。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_script: Option<crate::provider::UsageScript>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +221,7 @@ fn parse_models_str(text: &str) -> Result<Vec<OmpProviderConfig>, String> {
             raw: Some(YamlValue::Mapping(table)),
             sort_index: None,
             in_config: true,
+            usage_script: None,
         });
     }
     Ok(out)
@@ -352,6 +358,9 @@ pub struct OmpProviderMeta {
     /// models.yml，库条目（meta）保留，可随时「添加」回来；彻底删除时清掉。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<OmpProviderConfig>,
+    /// 用量查询脚本配置（OGG meta store 专属，不写 models.yml）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_script: Option<crate::provider::UsageScript>,
 }
 
 pub type OmpProviderMetaMap = BTreeMap<String, OmpProviderMeta>;
@@ -378,6 +387,7 @@ fn write_provider_meta(map: &OmpProviderMetaMap) -> Result<(), String> {
 fn meta_entry_from_provider(
     provider: &OmpProviderConfig,
     existing_sort_index: Option<i64>,
+    existing_usage_script: Option<crate::provider::UsageScript>,
 ) -> OmpProviderMeta {
     let mut snapshot = provider.clone();
     snapshot.in_config = false;
@@ -390,6 +400,7 @@ fn meta_entry_from_provider(
         oauth_provider_id: provider.oauth_provider_id.clone(),
         api: provider.api.clone(),
         sort_index: existing_sort_index,
+        usage_script: existing_usage_script.or(provider.usage_script.clone()),
         config: Some(snapshot),
     }
 }
@@ -416,6 +427,10 @@ fn apply_provider_meta(providers: &mut [OmpProviderConfig], meta: &OmpProviderMe
         }
         if m.sort_index.is_some() {
             provider.sort_index = m.sort_index;
+        }
+        // usage_script 真源在 meta store；Some 才覆盖（传输层回落 None）
+        if m.usage_script.is_some() {
+            provider.usage_script = m.usage_script.clone();
         }
     }
 }
@@ -465,10 +480,16 @@ fn models_to_yaml_value(models: &[OmpModelInfo]) -> YamlValue {
                     YamlValue::String(display_name),
                 );
                 if let Some(api) = &model.api {
-                    m.insert(YamlValue::String("api".into()), YamlValue::String(api.clone()));
+                    m.insert(
+                        YamlValue::String("api".into()),
+                        YamlValue::String(api.clone()),
+                    );
                 }
                 if let Some(reasoning) = model.reasoning {
-                    m.insert(YamlValue::String("reasoning".into()), YamlValue::Bool(reasoning));
+                    m.insert(
+                        YamlValue::String("reasoning".into()),
+                        YamlValue::Bool(reasoning),
+                    );
                 }
                 if model.context_window > 0 {
                     m.insert(
@@ -507,6 +528,17 @@ fn providers_to_yaml_value(providers: &[OmpProviderConfig]) -> YamlValue {
             .as_ref()
             .and_then(|v| v.as_mapping().cloned())
             .unwrap_or_default();
+        // provider 级 name：key 是内部 id（历史原因可能为 UUID），name 承载
+        // 可读显示名（omp 原生可选字段）。仅在 raw 本就没有 name 键时写入
+        //（原生条目的 name 已在 raw 中保真，不得被 meta 显示名覆盖）。
+        if !item.contains_key(YamlValue::String("name".into())) {
+            let display_name = provider.name.trim();
+            yaml_mapping_set(
+                &mut item,
+                "name",
+                (!display_name.is_empty()).then(|| YamlValue::String(display_name.to_string())),
+            );
+        }
         yaml_mapping_set(
             &mut item,
             "baseUrl",
@@ -534,7 +566,11 @@ fn providers_to_yaml_value(providers: &[OmpProviderConfig]) -> YamlValue {
                 .filter(|s| !s.is_empty())
                 .map(YamlValue::String),
         );
-        yaml_mapping_set(&mut item, "authHeader", provider.auth_header.map(YamlValue::Bool));
+        yaml_mapping_set(
+            &mut item,
+            "authHeader",
+            provider.auth_header.map(YamlValue::Bool),
+        );
         let headers_yaml = match &provider.headers {
             Some(h) if h.as_object().map(|o| !o.is_empty()).unwrap_or(false) => {
                 serde_yaml::to_value(h).ok()
@@ -551,10 +587,16 @@ fn providers_to_yaml_value(providers: &[OmpProviderConfig]) -> YamlValue {
                 Some(models_to_yaml_value(&provider.models))
             },
         );
-        map.insert(YamlValue::String(provider.id.clone()), YamlValue::Mapping(item));
+        map.insert(
+            YamlValue::String(provider.id.clone()),
+            YamlValue::Mapping(item),
+        );
     }
     let mut root = serde_yaml::Mapping::new();
-    root.insert(YamlValue::String("providers".into()), YamlValue::Mapping(map));
+    root.insert(
+        YamlValue::String("providers".into()),
+        YamlValue::Mapping(map),
+    );
     YamlValue::Mapping(root)
 }
 
@@ -576,7 +618,10 @@ fn write_live_config(config: &OmpSwitchConfig) -> Result<(), String> {
             }
             _ => format!("{}/{}", role.provider_id, role.model_id),
         };
-        roles.insert(YamlValue::String(role.role.clone()), YamlValue::String(selector));
+        roles.insert(
+            YamlValue::String(role.role.clone()),
+            YamlValue::String(selector),
+        );
     }
     let mut patch = BTreeMap::new();
     patch.insert("modelRoles".into(), YamlValue::Mapping(roles));
@@ -608,16 +653,24 @@ fn migrate_legacy_provider_ids() {
     }
 }
 
+/// 静态旧版预设映射的动态视图（供泛化后的 rename 函数使用）
+fn legacy_mapping() -> Vec<(String, String)> {
+    LEGACY_PROVIDER_ID_RENAMES
+        .iter()
+        .map(|(old, new)| ((*old).to_string(), (*new).to_string()))
+        .collect()
+}
+
 fn try_migrate_legacy_provider_ids() -> Result<(), String> {
     let dir = omp_agent_dir();
 
     // 1. models.yml：providers.<old> → <new>
     let models = models_path(&dir);
     if models.exists() {
-        let text =
-            fs::read_to_string(&models).map_err(|e| format!("读取 models.yml 失败: {e}"))?;
+        let text = fs::read_to_string(&models).map_err(|e| format!("读取 models.yml 失败: {e}"))?;
         let root: YamlValue = serde_yaml::from_str(&text).unwrap_or(YamlValue::Null);
-        let (updated, changed) = rename_models_yaml_provider_keys(&root);
+        let (updated, changed) =
+            rename_models_yaml_provider_keys_with(&root, &legacy_mapping(), true);
         if changed {
             let out = serde_yaml::to_string(&updated)
                 .map_err(|e| format!("序列化 models.yml 失败: {e}"))?;
@@ -628,10 +681,9 @@ fn try_migrate_legacy_provider_ids() -> Result<(), String> {
     // 2. config.yml：modelRoles / modelProviderOrder / retry.fallbackChains
     let config = config_path(&dir);
     if config.exists() {
-        let text =
-            fs::read_to_string(&config).map_err(|e| format!("读取 config.yml 失败: {e}"))?;
+        let text = fs::read_to_string(&config).map_err(|e| format!("读取 config.yml 失败: {e}"))?;
         let root: YamlValue = serde_yaml::from_str(&text).unwrap_or(YamlValue::Null);
-        let (updated, changed) = rename_config_yaml_provider_refs(&root);
+        let (updated, changed) = rename_config_yaml_provider_refs_with(&root, &legacy_mapping());
         if changed {
             let out = serde_yaml::to_string(&updated)
                 .map_err(|e| format!("序列化 config.yml 失败: {e}"))?;
@@ -642,7 +694,7 @@ fn try_migrate_legacy_provider_ids() -> Result<(), String> {
     // 3. meta store：键改名（内容保留）
     if omp_meta_path().exists() {
         let meta = read_provider_meta();
-        let (renamed, changed) = rename_meta_keys(&meta);
+        let (renamed, changed) = rename_meta_keys_with(&meta, &legacy_mapping());
         if changed {
             write_provider_meta(&renamed)?;
         }
@@ -650,11 +702,101 @@ fn try_migrate_legacy_provider_ids() -> Result<(), String> {
     Ok(())
 }
 
+/// 启动迁移：历史 bug 修复——纯中文名供应商 slug 化为空会回落 UUID 作为
+/// models.yml key，导致 omp /model 与角色 selector 显示 UUID。这里按
+/// meta store 中的显示名把 UUID 键改成可读键（幂等：目标键已占用则跳过）。
+fn migrate_uuid_provider_keys() {
+    if let Err(err) = try_migrate_uuid_provider_keys() {
+        log::warn!("迁移 UUID 供应商键失败（忽略，不影响加载）: {err}");
+    }
+}
+
+fn try_migrate_uuid_provider_keys() -> Result<(), String> {
+    let dir = omp_agent_dir();
+    let models = models_path(&dir);
+    if !models.exists() || !omp_meta_path().exists() {
+        return Ok(());
+    }
+    // 现有键集合（models.yml 的 provider key + OAuth 合成条目 id）
+    let existing_keys: std::collections::HashSet<String> = parse_models_file(&models)?
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    let meta = read_provider_meta();
+
+    // 构建 UUID → 显示名 映射；目标名被占用（重名）时跳过该条，保留 UUID
+    let mut claimed: std::collections::HashSet<String> = existing_keys.clone();
+    let mut mapping: Vec<(String, String)> = Vec::new();
+    for (id, entry) in &meta {
+        if !looks_like_uuid(id) {
+            continue;
+        }
+        let Some(name) = entry
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.contains('/'))
+        else {
+            continue;
+        };
+        if claimed.contains(name) {
+            continue;
+        }
+        claimed.insert(name.to_string());
+        mapping.push((id.clone(), name.to_string()));
+    }
+    if mapping.is_empty() {
+        return Ok(());
+    }
+
+    // 1. models.yml：UUID 键 → 显示名（目标已存在则跳过，绝不丢条目）
+    let text = fs::read_to_string(&models).map_err(|e| format!("读取 models.yml 失败: {e}"))?;
+    let root: YamlValue = serde_yaml::from_str(&text).unwrap_or(YamlValue::Null);
+    let (updated, changed) = rename_models_yaml_provider_keys_with(&root, &mapping, false);
+    if changed {
+        let out =
+            serde_yaml::to_string(&updated).map_err(|e| format!("序列化 models.yml 失败: {e}"))?;
+        atomic_write(&models, &out)?;
+    }
+
+    // 2. config.yml 引用改名
+    let config = config_path(&dir);
+    if config.exists() {
+        let text = fs::read_to_string(&config).map_err(|e| format!("读取 config.yml 失败: {e}"))?;
+        let root: YamlValue = serde_yaml::from_str(&text).unwrap_or(YamlValue::Null);
+        let (updated, changed) = rename_config_yaml_provider_refs_with(&root, &mapping);
+        if changed {
+            let out = serde_yaml::to_string(&updated)
+                .map_err(|e| format!("序列化 config.yml 失败: {e}"))?;
+            atomic_write(&config, &out)?;
+        }
+    }
+
+    // 3. meta store 键改名
+    let (renamed, changed) = rename_meta_keys_with(&meta, &mapping);
+    if changed {
+        write_provider_meta(&renamed)?;
+    }
+    Ok(())
+}
+
+/// 判断 key 是否为 UUID 形态（8-4-4-4-12 十六进制）
+fn looks_like_uuid(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(i, b)| match i {
+        8 | 13 | 18 | 23 => *b == b'-',
+        _ => b.is_ascii_hexdigit(),
+    })
+}
+
 /// 纯函数：`old` 或 `old/…` 形态的字符串按映射改前缀；未命中返回 None。
-fn rename_provider_prefix(value: &str) -> Option<String> {
-    for (old, new) in LEGACY_PROVIDER_ID_RENAMES {
-        if value == *old {
-            return Some((*new).to_string());
+fn rename_provider_prefix_with(value: &str, mapping: &[(String, String)]) -> Option<String> {
+    for (old, new) in mapping {
+        if value == old {
+            return Some(new.clone());
         }
         let prefix = format!("{old}/");
         if let Some(rest) = value.strip_prefix(&prefix) {
@@ -666,7 +808,11 @@ fn rename_provider_prefix(value: &str) -> Option<String> {
 
 /// 纯函数：models.yml 顶层 providers mapping 的键改名。
 /// 目标键已存在时丢弃旧条目（以内置为准），仍视为变更。
-fn rename_models_yaml_provider_keys(root: &YamlValue) -> (YamlValue, bool) {
+fn rename_models_yaml_provider_keys_with(
+    root: &YamlValue,
+    mapping: &[(String, String)],
+    drop_on_conflict: bool,
+) -> (YamlValue, bool) {
     let mut out = root.clone();
     let mut changed = false;
     let Some(providers) = out
@@ -676,14 +822,21 @@ fn rename_models_yaml_provider_keys(root: &YamlValue) -> (YamlValue, bool) {
     else {
         return (out, false);
     };
-    for (old, new) in LEGACY_PROVIDER_ID_RENAMES {
-        let old_key = YamlValue::String((*old).to_string());
-        if let Some(value) = providers.remove(&old_key) {
-            changed = true;
-            let new_key = YamlValue::String((*new).to_string());
-            if !providers.contains_key(&new_key) {
-                providers.insert(new_key, value);
-            }
+    for (old, new) in mapping {
+        let old_key = YamlValue::String(old.clone());
+        if !providers.contains_key(&old_key) {
+            continue;
+        }
+        let new_key = YamlValue::String(new.clone());
+        let conflict = providers.contains_key(&new_key);
+        if conflict && !drop_on_conflict {
+            // UUID 迁移语义：目标键被占 → 跳过，保留旧条目
+            continue;
+        }
+        let value = providers.remove(&old_key).expect("checked above");
+        changed = true;
+        if !conflict {
+            providers.insert(new_key, value);
         }
     }
     (out, changed)
@@ -693,7 +846,10 @@ fn rename_models_yaml_provider_keys(root: &YamlValue) -> (YamlValue, bool) {
 /// - `modelRoles`：值选择器 `old/model[:level]` → `new/…`
 /// - `modelProviderOrder`：序列项 `old` → `new`
 /// - `retry.fallbackChains`：键 `old` / `old/*` 与值序列中的 `old/…` → `new/…`
-fn rename_config_yaml_provider_refs(root: &YamlValue) -> (YamlValue, bool) {
+fn rename_config_yaml_provider_refs_with(
+    root: &YamlValue,
+    mapping: &[(String, String)],
+) -> (YamlValue, bool) {
     let mut out = root.clone();
     let mut changed = false;
 
@@ -704,7 +860,7 @@ fn rename_config_yaml_provider_refs(root: &YamlValue) -> (YamlValue, bool) {
         {
             for (_role, selector) in roles.iter_mut() {
                 if let Some(text) = selector.as_str() {
-                    if let Some(renamed) = rename_provider_prefix(text) {
+                    if let Some(renamed) = rename_provider_prefix_with(text, mapping) {
                         *selector = YamlValue::String(renamed);
                         changed = true;
                     }
@@ -718,7 +874,7 @@ fn rename_config_yaml_provider_refs(root: &YamlValue) -> (YamlValue, bool) {
         {
             for item in order.iter_mut() {
                 if let Some(text) = item.as_str() {
-                    if let Some(renamed) = rename_provider_prefix(text) {
+                    if let Some(renamed) = rename_provider_prefix_with(text, mapping) {
                         *item = YamlValue::String(renamed);
                         changed = true;
                     }
@@ -736,7 +892,9 @@ fn rename_config_yaml_provider_refs(root: &YamlValue) -> (YamlValue, bool) {
             let stale: Vec<(YamlValue, YamlValue, YamlValue)> = chains_map
                 .iter()
                 .filter_map(|(k, v)| {
-                    let new_key = k.as_str().and_then(rename_provider_prefix)?;
+                    let new_key = k
+                        .as_str()
+                        .and_then(|text| rename_provider_prefix_with(text, mapping))?;
                     Some((k.clone(), YamlValue::String(new_key), v.clone()))
                 })
                 .collect();
@@ -752,7 +910,7 @@ fn rename_config_yaml_provider_refs(root: &YamlValue) -> (YamlValue, bool) {
                 if let Some(seq) = value.as_sequence_mut() {
                     for item in seq.iter_mut() {
                         if let Some(text) = item.as_str() {
-                            if let Some(renamed) = rename_provider_prefix(text) {
+                            if let Some(renamed) = rename_provider_prefix_with(text, mapping) {
                                 *item = YamlValue::String(renamed);
                                 changed = true;
                             }
@@ -767,13 +925,16 @@ fn rename_config_yaml_provider_refs(root: &YamlValue) -> (YamlValue, bool) {
 }
 
 /// 纯函数：meta store 键改名（目标键已存在时保留已有条目，丢弃旧条目）。
-fn rename_meta_keys(meta: &OmpProviderMetaMap) -> (OmpProviderMetaMap, bool) {
+fn rename_meta_keys_with(
+    meta: &OmpProviderMetaMap,
+    mapping: &[(String, String)],
+) -> (OmpProviderMetaMap, bool) {
     let mut out = meta.clone();
     let mut changed = false;
-    for (old, new) in LEGACY_PROVIDER_ID_RENAMES {
-        if let Some(entry) = out.remove(*old) {
+    for (old, new) in mapping {
+        if let Some(entry) = out.remove(old) {
             changed = true;
-            out.entry((*new).to_string()).or_insert(entry);
+            out.entry(new.clone()).or_insert(entry);
         }
     }
     (out, changed)
@@ -781,6 +942,7 @@ fn rename_meta_keys(meta: &OmpProviderMetaMap) -> (OmpProviderMetaMap, bool) {
 
 fn load_live_config() -> Result<OmpSwitchConfig, String> {
     migrate_legacy_provider_ids();
+    migrate_uuid_provider_keys();
     let dir = omp_agent_dir();
     let mut providers = parse_models_file(&models_path(&dir))?;
     let roles = parse_roles_file(&config_path(&dir))?;
@@ -802,10 +964,7 @@ fn load_live_config() -> Result<OmpSwitchConfig, String> {
 /// 纯函数：meta 中记录为 OAuth、且 yml 无对应条目的供应商，合成列表项展示。
 /// 凭据在 omp CLI 凭据库中，models.yml 不落盘；模型列表留空（由 omp 从上游
 /// 自动发现，角色选择器直接引用上游模型 id 即可）。
-fn synthesize_oauth_providers(
-    providers: &mut Vec<OmpProviderConfig>,
-    meta: &OmpProviderMetaMap,
-) {
+fn synthesize_oauth_providers(providers: &mut Vec<OmpProviderConfig>, meta: &OmpProviderMetaMap) {
     for (id, m) in meta {
         if m.provider_type.as_deref() != Some("oauth") {
             continue;
@@ -837,6 +996,7 @@ fn synthesize_oauth_providers(
             raw: None,
             sort_index: m.sort_index,
             in_config: true,
+            usage_script: None,
         });
     }
 }
@@ -844,10 +1004,7 @@ fn synthesize_oauth_providers(
 /// 纯函数：库条目合成。meta 中存有完整配置快照（config）、非 OAuth、且 yml
 /// 无对应条目的供应商 = 「已从配置移除但保留在库中」，合成进列表供「添加」。
 /// live 条目与 OAuth 合成条目不受影响（in_config 已为 true）。
-fn synthesize_library_providers(
-    providers: &mut Vec<OmpProviderConfig>,
-    meta: &OmpProviderMetaMap,
-) {
+fn synthesize_library_providers(providers: &mut Vec<OmpProviderConfig>, meta: &OmpProviderMetaMap) {
     for (id, m) in meta {
         let Some(mut config) = m.config.clone() else {
             continue;
@@ -907,7 +1064,11 @@ fn omp_cli_available() -> bool {
                 "omp CLI 探测失败（{}）：exit={:?} stderr={}",
                 exe.display(),
                 o.status.code(),
-                String::from_utf8_lossy(&o.stderr).trim().chars().take(200).collect::<String>()
+                String::from_utf8_lossy(&o.stderr)
+                    .trim()
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
             );
             false
         }
@@ -927,10 +1088,12 @@ pub async fn read_omp_config() -> Result<OmpSwitchConfig, String> {
 pub async fn save_omp_provider(mut provider: OmpProviderConfig) -> Result<(), String> {
     // meta 字段（icon/名称/备注/官网）落 OGG 自己的 store；models.yml 只写 OMP 原生字段
     let mut meta = read_provider_meta();
-    let existing_sort_index = meta.get(&provider.id).and_then(|m| m.sort_index);
+    let existing = meta.get(&provider.id);
+    let existing_sort_index = existing.and_then(|m| m.sort_index);
+    let existing_usage_script = existing.and_then(|m| m.usage_script.clone());
     meta.insert(
         provider.id.clone(),
-        meta_entry_from_provider(&provider, existing_sort_index),
+        meta_entry_from_provider(&provider, existing_sort_index, existing_usage_script),
     );
     write_provider_meta(&meta)?;
 
@@ -1035,7 +1198,7 @@ fn ensure_library_snapshot(
     let existing_sort_index = meta.get(&provider.id).and_then(|m| m.sort_index);
     meta.insert(
         provider.id.clone(),
-        meta_entry_from_provider(provider, existing_sort_index),
+        meta_entry_from_provider(provider, existing_sort_index, None),
     );
     (meta, true)
 }
@@ -1110,6 +1273,63 @@ pub async fn get_all_omp_providers() -> Result<Vec<OmpProviderConfig>, String> {
     Ok(load_live_config()?.providers)
 }
 
+/// 把 omp 供应商转换为通用 Provider 结构（用量查询等通用体系复用）。
+/// settings_config 走 {"config": "<OmpProviderConfig JSON>"} 载体，
+/// 与 provider.rs resolve_usage_credentials 的 Omp 分支口径一致。
+pub(crate) fn omp_provider_to_usage_provider(
+    config: OmpProviderConfig,
+) -> crate::provider::Provider {
+    let config_json = serde_json::to_string(&config).unwrap_or_default();
+    let mut provider = crate::provider::Provider::with_id(
+        config.id.clone(),
+        config.name.clone(),
+        serde_json::json!({ "config": config_json }),
+        config.website_url.clone(),
+    );
+    provider.category = Some("custom".to_string());
+    if config.usage_script.is_some() {
+        provider.meta = Some(crate::provider::ProviderMeta {
+            usage_script: config.usage_script.clone(),
+            ..crate::provider::ProviderMeta::default()
+        });
+    }
+    provider
+}
+
+/// 查找单个 omp 供应商并转换为通用 Provider（不在 SQLite，专道构造）。
+pub(crate) async fn find_omp_usage_provider(
+    provider_id: &str,
+) -> Result<crate::provider::Provider, crate::error::AppError> {
+    let providers = get_all_omp_providers()
+        .await
+        .map_err(crate::error::AppError::Message)?;
+    let matched = providers
+        .into_iter()
+        .find(|p| p.id == provider_id)
+        .ok_or_else(|| {
+            crate::error::AppError::localized(
+                "provider.not_found",
+                format!("供应商不存在: {provider_id}"),
+                format!("Provider not found: {provider_id}"),
+            )
+        })?;
+    Ok(omp_provider_to_usage_provider(matched))
+}
+
+/// 保存 omp 供应商的用量查询脚本（真源 = OGG meta store，仿 pi 专道；
+/// omp 不在 SQLite，通用 update_provider 命令不适用）。
+#[tauri::command]
+pub async fn update_omp_provider_usage_script(
+    id: String,
+    usage_script: crate::provider::UsageScript,
+) -> Result<bool, String> {
+    let mut meta = read_provider_meta();
+    let entry = meta.entry(id).or_default();
+    entry.usage_script = Some(usage_script);
+    write_provider_meta(&meta)?;
+    Ok(true)
+}
+
 /// 拖拽排序持久化：按前端提交的完整可见顺序把 sort_index 写入 meta store。
 /// models.yml 不动（omp 原生文件不携带 OGG 排序概念），列表顺序由
 /// load_live_config 统一应用。
@@ -1178,7 +1398,9 @@ pub fn omp_set_default_provider(provider_id: &str) -> Result<(), String> {
         return Err(format!("OMP 供应商不存在: {provider_id}"));
     };
     let Some(model) = provider.models.first() else {
-        return Err(format!("OMP 供应商 {provider_id} 没有可用模型，无法设为默认"));
+        return Err(format!(
+            "OMP 供应商 {provider_id} 没有可用模型，无法设为默认"
+        ));
     };
     config.roles.retain(|r| r.role != "default");
     config.roles.push(OmpModelRole {
@@ -1457,7 +1679,11 @@ pub async fn omp_list_models(provider_id: String) -> Result<Vec<OmpModelInfo>, S
 /// `${VAR}` / `$VAR` → 读环境变量；其余原样返回（明文密钥）。
 fn resolve_secret_form(raw: &str) -> String {
     let trimmed = raw.trim();
-    if let Some(cmd) = trimmed.strip_prefix('!').map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(cmd) = trimmed
+        .strip_prefix('!')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         return run_secret_command(cmd);
     }
     if trimmed.starts_with("$(") && trimmed.ends_with(')') && trimmed.len() > 3 {
@@ -1566,6 +1792,11 @@ pub async fn omp_fetch_upstream_models(
         .collect())
 }
 
+#[tauri::command]
+pub fn get_omp_quota_windows() -> Result<Vec<OmpQuotaWindow>, String> {
+    crate::services::session_usage_omp::list_omp_quota_windows().map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1615,7 +1846,10 @@ modelProviderOrder:
         assert_eq!(providers.len(), 2);
 
         let sensenova = providers.iter().find(|p| p.id == "SenseNova").unwrap();
-        assert_eq!(sensenova.base_url.as_deref(), Some("https://token.sensenova.cn/v1"));
+        assert_eq!(
+            sensenova.base_url.as_deref(),
+            Some("https://token.sensenova.cn/v1")
+        );
         assert_eq!(sensenova.api.as_deref(), Some("openai-completions"));
         assert!(sensenova.api_key.as_deref().unwrap().contains("secret-get"));
         assert_eq!(sensenova.auth_header, Some(true));
@@ -1654,19 +1888,31 @@ modelProviderOrder:
     #[test]
     fn rename_provider_prefix_matches_exact_and_slash() {
         assert_eq!(
-            rename_provider_prefix("deepseek-api"),
+            rename_provider_prefix_with("deepseek-api", &legacy_mapping()),
             Some("deepseek".into())
         );
         assert_eq!(
-            rename_provider_prefix("deepseek-api/deepseek-flash:high"),
+            rename_provider_prefix_with("deepseek-api/deepseek-flash:high", &legacy_mapping()),
             Some("deepseek/deepseek-flash:high".into())
         );
-        assert_eq!(rename_provider_prefix("xai-api"), Some("xai".into()));
+        assert_eq!(
+            rename_provider_prefix_with("xai-api", &legacy_mapping()),
+            Some("xai".into())
+        );
         // 未命中原样返回 None
-        assert_eq!(rename_provider_prefix("Rigel/grok-4.6"), None);
-        assert_eq!(rename_provider_prefix("deepseek"), None);
+        assert_eq!(
+            rename_provider_prefix_with("Rigel/grok-4.6", &legacy_mapping()),
+            None
+        );
+        assert_eq!(
+            rename_provider_prefix_with("deepseek", &legacy_mapping()),
+            None
+        );
         // 前缀相似但不是旧 id（如 "deepseek-api2"）不改
-        assert_eq!(rename_provider_prefix("deepseek-api2/model"), None);
+        assert_eq!(
+            rename_provider_prefix_with("deepseek-api2/model", &legacy_mapping()),
+            None
+        );
     }
 
     #[test]
@@ -1682,7 +1928,7 @@ providers:
 "#,
         )
         .unwrap();
-        let (out, changed) = rename_models_yaml_provider_keys(&root);
+        let (out, changed) = rename_models_yaml_provider_keys_with(&root, &legacy_mapping(), true);
         assert!(changed);
         let providers = out.get("providers").unwrap().as_mapping().unwrap();
         assert!(providers.contains_key(&YamlValue::String("deepseek".into())));
@@ -1712,7 +1958,7 @@ providers:
 "#,
         )
         .unwrap();
-        let (out, changed) = rename_models_yaml_provider_keys(&root);
+        let (out, changed) = rename_models_yaml_provider_keys_with(&root, &legacy_mapping(), true);
         assert!(changed); // 旧键被清理
         let providers = out.get("providers").unwrap().as_mapping().unwrap();
         // 内置条目不被覆盖
@@ -1745,7 +1991,7 @@ retry:
 "#,
         )
         .unwrap();
-        let (out, changed) = rename_config_yaml_provider_refs(&root);
+        let (out, changed) = rename_config_yaml_provider_refs_with(&root, &legacy_mapping());
         assert!(changed);
         let map = out.as_mapping().unwrap();
 
@@ -1804,7 +2050,7 @@ retry:
         entry.sort_index = Some(0);
         meta.insert("deepseek-api".into(), entry);
 
-        let (out, changed) = rename_meta_keys(&meta);
+        let (out, changed) = rename_meta_keys_with(&meta, &legacy_mapping());
         assert!(changed);
         assert!(out.contains_key("deepseek"));
         assert!(!out.contains_key("deepseek-api"));
@@ -1815,7 +2061,7 @@ retry:
         assert_eq!(out.get("deepseek").unwrap().sort_index, Some(0));
 
         // 幂等：已迁移的映射再跑一遍无变化
-        let (_, changed_again) = rename_meta_keys(&out);
+        let (_, changed_again) = rename_meta_keys_with(&out, &legacy_mapping());
         assert!(!changed_again);
     }
 
@@ -1848,7 +2094,14 @@ retry:
         synthesize_library_providers(&mut providers, &meta);
 
         // live 条目不受影响
-        assert_eq!(providers.iter().find(|p| p.id == "Rigel").unwrap().in_config, true);
+        assert_eq!(
+            providers
+                .iter()
+                .find(|p| p.id == "Rigel")
+                .unwrap()
+                .in_config,
+            true
+        );
         // 库条目被合成：in_config=false，meta 的名称/排序覆盖生效
         let lib = providers.iter().find(|p| p.id == "SenseNova").unwrap();
         assert_eq!(lib.in_config, false);
@@ -1894,7 +2147,12 @@ retry:
         let (out2, changed2) = ensure_library_snapshot(out, &sample_provider("Rigel"));
         assert!(!changed2);
         assert_eq!(
-            out2.get("Rigel").unwrap().config.as_ref().unwrap().in_config,
+            out2.get("Rigel")
+                .unwrap()
+                .config
+                .as_ref()
+                .unwrap()
+                .in_config,
             false
         );
     }
@@ -1906,7 +2164,10 @@ retry:
         let meta = OmpProviderMetaMap::new();
         let (out, changed) = ensure_library_snapshot(meta, &oauth);
         assert!(!changed);
-        assert!(out.get("openai").map(|m| m.config.is_none()).unwrap_or(true));
+        assert!(out
+            .get("openai")
+            .map(|m| m.config.is_none())
+            .unwrap_or(true));
     }
 
     #[test]
@@ -1934,6 +2195,7 @@ retry:
             raw: None,
             sort_index: None,
             in_config: true,
+            usage_script: None,
         }
     }
 
@@ -2145,5 +2407,90 @@ retry:
         );
         // 未知变量 → 空（不把 $VAR 字面量当密钥发出去）
         assert_eq!(resolve_secret_form("$OGG_UNSET_VAR_XYZ_42"), "");
+    }
+    #[test]
+    fn looks_like_uuid_detects_uuid_shapes() {
+        assert!(looks_like_uuid("a3bab366-ed10-4277-9281-1dd499b4008d"));
+        assert!(!looks_like_uuid("优云智算"));
+        assert!(!looks_like_uuid("SenseNova"));
+        assert!(!looks_like_uuid("short-uuid"));
+        assert!(!looks_like_uuid("a3bab366-ed10-4277-9281-1dd499b4008"));
+    }
+
+    #[test]
+    fn models_rename_drop_on_conflict_controls_semantics() {
+        let root: YamlValue = serde_yaml::from_str(
+            "providers:\n  old-id:\n    baseUrl: https://a\n  target:\n    baseUrl: https://b",
+        )
+        .unwrap();
+        let mapping = vec![("old-id".to_string(), "target".to_string())];
+        // drop_on_conflict = true（legacy 语义）：目标已存在 → 丢弃旧条目（同服务去重）
+        let (out, changed) = rename_models_yaml_provider_keys_with(&root, &mapping, true);
+        assert!(changed);
+        let providers = out.get("providers").unwrap();
+        assert!(providers.get("target").is_some());
+        assert!(providers.get("old-id").is_none());
+        // drop_on_conflict = false（UUID 迁移语义）：目标被占 → 跳过保留旧条目
+        let (out, changed) = rename_models_yaml_provider_keys_with(&root, &mapping, false);
+        assert!(!changed);
+        let providers = out.get("providers").unwrap();
+        assert!(providers.get("old-id").is_some());
+        assert!(providers.get("target").is_some());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn uuid_keys_migrate_to_meta_names() {
+        // 临时 HOME 隔离（omp_agent_dir / omp_meta_path 都走 get_home_dir）
+        let tmp = tempfile::tempdir().unwrap();
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", tmp.path());
+        (|| {
+            let uuid = "a3bab366-ed10-4277-9281-1dd499b4008d";
+            let dir = omp_agent_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                models_path(&dir),
+                format!(
+                    "providers:\n  {uuid}:\n    baseUrl: https://api.modelverse.cn/v1\n    apiKey: sk-x\n    api: openai-completions\n    models:\n      - id: deepseek-v4.1-flash\n        name: deepseek-v4.1-flash\n        contextWindow: 128000\n        maxTokens: 8192\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                config_path(&dir),
+                format!("modelRoles:\n  default: {uuid}/deepseek-v4.1-flash:high\n"),
+            )
+            .unwrap();
+            let mut meta: OmpProviderMetaMap = BTreeMap::new();
+            meta.insert(
+                uuid.to_string(),
+                OmpProviderMeta {
+                    name: Some("优云智算".into()),
+                    ..Default::default()
+                },
+            );
+            write_provider_meta(&meta).unwrap();
+
+            try_migrate_uuid_provider_keys().unwrap();
+
+            let models_text = fs::read_to_string(models_path(&dir)).unwrap();
+            assert!(
+                models_text.contains("优云智算"),
+                "models.yml should use the display name: {models_text}"
+            );
+            assert!(!models_text.contains(uuid));
+            let config_text = fs::read_to_string(config_path(&dir)).unwrap();
+            assert!(
+                config_text.contains("优云智算/deepseek-v4.1-flash:high"),
+                "role selector should be rewritten: {config_text}"
+            );
+            let meta_after = read_provider_meta();
+            assert!(meta_after.contains_key("优云智算"));
+            assert!(!meta_after.contains_key(uuid));
+        })();
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
     }
 }

@@ -21,8 +21,10 @@ import { geminiProviderPresets } from "@/config/geminiProviderPresets";
 import { claudeDesktopProviderPresets } from "@/config/claudeDesktopProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
-import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
-import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
+import {
+  ANTIGRAVITY_OFFICIAL_PROVIDER_ID,
+  GROKBUILD_OFFICIAL_PROVIDER_ID,
+} from "@/utils/providerCapabilities";
 import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 import type { ManagedAuthProvider } from "@/lib/api";
 
@@ -33,9 +35,9 @@ interface AddProviderDialogProps {
   onSubmit: (
     provider: Omit<Provider, "id"> & {
       providerKey?: string;
-      suggestedDefaults?: OpenClawSuggestedDefaults;
       ensureClaudeDesktopOfficialSeed?: boolean;
       ensureGrokBuildOfficialSeed?: boolean;
+      ensureAntigravityOfficialSeed?: boolean;
     },
   ) => Promise<void> | void;
 }
@@ -47,13 +49,12 @@ export function AddProviderDialog({
   onSubmit,
 }: AddProviderDialogProps) {
   const { t } = useTranslation();
-  // OpenCode and OpenClaw don't support universal providers
+  // OpenCode and Pi don't support universal providers
   const showUniversalTab =
     appId !== "opencode" &&
-    appId !== "openclaw" &&
-    appId !== "hermes" &&
     appId !== "pi" &&
     appId !== "grokbuild" &&
+    appId !== "antigravity" &&
     appId !== "claude-desktop" &&
     appId !== "omp";
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
@@ -163,9 +164,9 @@ export function AddProviderDialog({
       // 构造基础提交数据
       const providerData: Omit<Provider, "id"> & {
         providerKey?: string;
-        suggestedDefaults?: OpenClawSuggestedDefaults;
         ensureClaudeDesktopOfficialSeed?: boolean;
         ensureGrokBuildOfficialSeed?: boolean;
+        ensureAntigravityOfficialSeed?: boolean;
       } = {
         name: values.name.trim(),
         notes: values.notes?.trim() || undefined,
@@ -192,15 +193,15 @@ export function AddProviderDialog({
           values.presetId === GROKBUILD_OFFICIAL_PROVIDER_ID;
       }
 
+      if (appId === "antigravity" && values.presetId) {
+        providerData.ensureAntigravityOfficialSeed =
+          values.presetCategory === "official" &&
+          values.presetId === ANTIGRAVITY_OFFICIAL_PROVIDER_ID;
+      }
+
       // Apps whose native catalog has a stable provider key use it as the
       // managed provider identity.
-      if (
-        (appId === "opencode" ||
-          appId === "openclaw" ||
-          appId === "hermes" ||
-          appId === "pi") &&
-        values.providerKey
-      ) {
+      if ((appId === "opencode" || appId === "pi") && values.providerKey) {
         providerData.providerKey = values.providerKey;
       }
       const hasCustomEndpoints =
@@ -303,6 +304,11 @@ export function AddProviderDialog({
           if (env?.GOOGLE_GEMINI_BASE_URL) {
             addUrl(env.GOOGLE_GEMINI_BASE_URL);
           }
+        } else if (appId === "antigravity") {
+          const env = parsedConfig.env as Record<string, any> | undefined;
+          if (env?.GOOGLE_GEMINI_BASE_URL) {
+            addUrl(env.GOOGLE_GEMINI_BASE_URL);
+          }
         } else if (appId === "grokbuild") {
           const config = parsedConfig.config as string | undefined;
           if (config) {
@@ -314,15 +320,6 @@ export function AddProviderDialog({
             | undefined;
           if (options?.baseURL) {
             addUrl(options.baseURL);
-          }
-        } else if (appId === "openclaw") {
-          // OpenClaw uses baseUrl directly
-          if (parsedConfig.baseUrl) {
-            addUrl(parsedConfig.baseUrl as string);
-          }
-        } else if (appId === "hermes") {
-          if (parsedConfig.base_url) {
-            addUrl(parsedConfig.base_url as string);
           }
         }
 
@@ -343,11 +340,6 @@ export function AddProviderDialog({
             custom_endpoints: customEndpoints,
           };
         }
-      }
-
-      // OpenClaw: pass suggestedDefaults for model registration
-      if (appId === "openclaw" && values.suggestedDefaults) {
-        providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
       await onSubmit(providerData);
@@ -442,7 +434,7 @@ export function AddProviderDialog({
           </TabsContent>
         </Tabs>
       ) : (
-        // OpenCode/OpenClaw: directly show form without tabs
+        // OpenCode: directly show form without tabs
         <ProviderForm
           appId={appId}
           submitLabel={t("common.add")}

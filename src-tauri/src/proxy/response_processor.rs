@@ -187,15 +187,12 @@ pub async fn handle_streaming(
     // grok CLI (>= 1.0.30) hard-requires `sequence_number` on every Responses
     // SSE event. Native-Responses passthrough from third-party relays may omit
     // it, so normalize only for Grok Build; every other app passes through.
-    let stream: std::pin::Pin<
-        Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>,
-    > = if ctx.app_type == crate::app_config::AppType::GrokBuild {
-        Box::pin(super::providers::codex_responses_sse::sequence_number_stream(
-            stream,
-        ))
-    } else {
-        Box::pin(stream)
-    };
+    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+        if ctx.app_type == crate::app_config::AppType::GrokBuild {
+            Box::pin(super::providers::codex_responses_sse::sequence_number_stream(stream))
+        } else {
+            Box::pin(stream)
+        };
 
     // 创建使用量收集器；关闭 usage logging 时不要在流式热路径上解析每个 SSE event。
     let usage_collector = create_usage_collector(ctx, state, status.as_u16(), parser_config);

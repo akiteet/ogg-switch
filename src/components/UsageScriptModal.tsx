@@ -308,6 +308,18 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
             apiKey: options.apiKey,
             baseUrl: options.baseURL,
           };
+        } else if (appId === "omp") {
+          // omp: settingsConfig.config 是 OmpProviderConfig 的 JSON 串
+          // （与后端 resolve_usage_credentials 的 Omp 分支口径一致）
+          try {
+            const parsed = JSON.parse((config as any).config || "{}");
+            return {
+              apiKey: parsed.apiKey,
+              baseUrl: parsed.baseUrl,
+            };
+          } catch {
+            return { apiKey: undefined, baseUrl: undefined };
+          }
         }
         return { apiKey: undefined, baseUrl: undefined };
       } catch (error) {

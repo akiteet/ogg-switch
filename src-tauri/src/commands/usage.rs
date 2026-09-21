@@ -262,15 +262,6 @@ pub async fn sync_session_usage(
     .map_err(|error| AppError::Message(format!("会话用量同步任务失败: {error}")))
 }
 
-/// Codex reset 成功后，无论重导是否导入新行或返回错误，都必须通知前端刷新。
-/// 调用方应只在 reset 成功后调用，避免把未发生的数据变更误报为重建完成。
-fn finish_codex_rebuild(
-    result: Result<crate::services::session_usage::SessionSyncResult, AppError>,
-) -> Result<crate::services::session_usage::SessionSyncResult, AppError> {
-    crate::usage_events::notify_log_recorded();
-    result
-}
-
 /// 备份数据库后，仅重建 Codex session 用量。锁覆盖 backup → reset → import
 
 /// 获取数据来源分布
@@ -279,34 +270,4 @@ pub fn get_usage_data_sources(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::services::session_usage::DataSourceSummary>, AppError> {
     crate::services::session_usage::get_data_source_breakdown(&state.db)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn codex_rebuild_notifies_when_reimport_is_empty() {
-        crate::usage_events::take_test_notify_count();
-
-        let result = finish_codex_rebuild(Ok(
-            crate::services::session_usage::SessionSyncResult::default(),
-        ))
-        .expect("空重导应成功");
-
-        assert_eq!(result.imported, 0);
-        assert_eq!(crate::usage_events::take_test_notify_count(), 1);
-    }
-
-    #[test]
-    fn codex_rebuild_notifies_when_reimport_fails_after_reset() {
-        crate::usage_events::take_test_notify_count();
-
-        let result = finish_codex_rebuild(Err(AppError::Message(
-            "synthetic reimport failure".to_string(),
-        )));
-
-        assert!(result.is_err());
-        assert_eq!(crate::usage_events::take_test_notify_count(), 1);
-    }
 }

@@ -59,40 +59,6 @@ pub fn get_opencode_config_path() -> PathBuf {
     get_opencode_dir().join("opencode.json")
 }
 
-/// 获取 OpenCode SQLite 数据库路径
-/// 优先级: OPENCODE_DB 环境变量 > XDG_DATA_HOME > ~/.local/share/opencode
-pub fn get_opencode_db_path() -> PathBuf {
-    // 支持 OPENCODE_DB 环境变量覆盖（忽略空字符串）
-    if let Ok(custom_path) = std::env::var("OPENCODE_DB") {
-        if !custom_path.is_empty() {
-            let path = PathBuf::from(&custom_path);
-            if path.is_absolute() {
-                return path;
-            }
-            // 相对路径基于数据目录
-            return get_opencode_data_dir().join(path);
-        }
-    }
-
-    get_opencode_data_dir().join("opencode.db")
-}
-
-fn get_opencode_data_dir() -> PathBuf {
-    // 尊重 XDG_DATA_HOME（按 XDG 规范，空字符串视为未设置）
-    if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
-        if !xdg_data.is_empty() {
-            return PathBuf::from(xdg_data).join("opencode");
-        }
-    }
-
-    // OpenCode 使用 xdg-basedir，不遵守 macOS/Windows 平台约定，
-    // 所有平台默认都落在 ~/.local/share/opencode
-    crate::config::get_home_dir()
-        .join(".local")
-        .join("share")
-        .join("opencode")
-}
-
 #[allow(dead_code)]
 pub fn get_opencode_env_path() -> PathBuf {
     get_opencode_dir().join(".env")
@@ -214,48 +180,6 @@ pub fn get_typed_providers() -> Result<IndexMap<String, OpenCodeProviderConfig>,
 pub fn set_typed_provider(id: &str, config: &OpenCodeProviderConfig) -> Result<(), AppError> {
     let value = serde_json::to_value(config).map_err(|e| AppError::JsonSerialize { source: e })?;
     set_provider(id, value)
-}
-
-pub fn get_mcp_servers() -> Result<Map<String, Value>, AppError> {
-    let config = read_opencode_config()?;
-    Ok(config
-        .get("mcp")
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default())
-}
-
-pub fn set_mcp_server(id: &str, config: Value) -> Result<(), AppError> {
-    let _guard = opencode_config_lock().lock()?;
-    let path = get_opencode_config_path();
-    let mut full_config = read_opencode_config_from_path(&path)?;
-
-    if !full_config.get("mcp").is_some_and(Value::is_object) {
-        if full_config.get("mcp").is_some() {
-            log::warn!("opencode.json 的 mcp 不是对象，已重置为空对象");
-        }
-        full_config["mcp"] = json!({});
-    }
-
-    if let Some(mcp) = full_config.get_mut("mcp").and_then(|v| v.as_object_mut()) {
-        mcp.insert(id.to_string(), config);
-    }
-
-    write_opencode_config_to_path_with_contents(&path, &full_config).map(|_| ())
-}
-
-pub fn remove_mcp_server(id: &str) -> Result<(), AppError> {
-    let _guard = opencode_config_lock().lock()?;
-    let path = get_opencode_config_path();
-    let mut config = read_opencode_config_from_path(&path)?;
-
-    if let Some(mcp) = config.get_mut("mcp").and_then(|v| v.as_object_mut()) {
-        mcp.remove(id);
-    } else if config.get("mcp").is_some() {
-        log::warn!("opencode.json 的 mcp 不是对象，无法删除服务器 '{id}'");
-    }
-
-    write_opencode_config_to_path_with_contents(&path, &config).map(|_| ())
 }
 
 pub fn add_plugin(path: &Path, plugin_name: &str) -> Result<(), AppError> {
@@ -397,28 +321,6 @@ mod tests {
         assert!(
             read_opencode_config().is_ok(),
             "a normal object config must still load"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn set_mcp_server_normalizes_non_object_section() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let _guard = TestHomeGuard::set(temp.path());
-
-        // `"mcp": []` 时旧代码的 as_object_mut 返回 None → 写入静默失效
-        write_config(temp.path(), "{\"model\": \"keep-me\", \"mcp\": []}");
-
-        set_mcp_server("echo", json!({"command": "npx"})).expect("set must succeed");
-
-        let config = read_opencode_config().expect("reload");
-        assert_eq!(
-            config["mcp"]["echo"]["command"], "npx",
-            "server must actually be written"
-        );
-        assert_eq!(
-            config["model"], "keep-me",
-            "unrelated user config must be preserved"
         );
     }
 

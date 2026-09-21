@@ -2,17 +2,17 @@
 
 English | [简体中文](README.zh-CN.md)
 
-**One control plane for Grok Build and Oh My Pi.**
+**One control plane for Grok Build, Oh My Pi and Antigravity.**
 
 [![Release](https://img.shields.io/github/v/release/akiteet/ogg-switch?style=flat-square)](https://github.com/akiteet/ogg-switch/releases)
 [![License](https://img.shields.io/github/license/akiteet/ogg-switch?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)](#download)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB?style=flat-square)](https://tauri.app)
 
-OGG Switch unifies two of the most capable AI coding runtimes — xAI's **Grok Build** and
-**Oh My Pi (OMP)** — behind a single desktop interface. It reads your existing local
-configuration, presents it as a clean, searchable catalog, and keeps both runtimes in sync
-without ever asking you to hand-edit a YAML file.
+OGG Switch unifies three of the most capable AI coding runtimes — xAI's **Grok Build**,
+**Oh My Pi (OMP)** and Google's **Antigravity CLI (agy)** — behind a single desktop
+interface. It reads your existing local configuration, presents it as a clean, searchable
+catalog, and keeps the runtimes in sync without ever asking you to hand-edit a YAML file.
 
 Built with **Tauri 2** and **Rust**, OGG Switch is a ~25 MB native binary with zero telemetry
 and no cloud dependency. Your keys and configuration never leave your machine.
@@ -40,6 +40,10 @@ and no cloud dependency. Your keys and configuration never leave your machine.
   routing)
 - Oh My Pi mode works directly on `models.yml` / `config.yml`, with a provider library
   that keeps removed entries recoverable
+- Antigravity mode manages Google's `agy`: API-key/relay providers via
+  `~/.gemini/antigravity-cli/settings.json` plus persistent `GEMINI_API_KEY` /
+  `GOOGLE_GEMINI_BASE_URL` environment variables, and multi-account Google login by
+  snapshotting/restoring `antigravity-oauth-token`
 - One click to import an existing live configuration as a managed profile
 
 **Production-grade plumbing**
@@ -136,6 +140,7 @@ stored in a proprietary format.
 |---------|-------|
 | OGG Switch | `~/.ogg-switch/` (profiles, proxy state, usage data) |
 | Oh My Pi | `~/.omp/agent/models.yml` (providers) and `~/.omp/agent/config.yml` (roles, retry chains) |
+| Antigravity (agy) | `~/.gemini/antigravity-cli/settings.json` (`modelProvider`), persistent env vars (`GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL`) and `~/.gemini/antigravity-cli/antigravity-oauth-token` (Google account snapshots) |
 
 ---
 

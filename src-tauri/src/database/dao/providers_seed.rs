@@ -14,6 +14,7 @@ use crate::app_config::AppType;
 pub(crate) const CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID: &str = "claude-desktop-official";
 pub(crate) const CODEX_OFFICIAL_PROVIDER_ID: &str = "codex-official";
 pub(crate) const GROKBUILD_OFFICIAL_PROVIDER_ID: &str = "grokbuild-official";
+pub(crate) const ANTIGRAVITY_OFFICIAL_PROVIDER_ID: &str = "antigravity-official";
 
 /// 单条官方供应商种子定义。
 pub(crate) struct OfficialProviderSeed {
@@ -80,6 +81,17 @@ pub(crate) const OFFICIAL_SEEDS: &[OfficialProviderSeed] = &[
         icon_color: "currentColor",
         // 空 config = 不写自定义模型表，Grok CLI 回落到自带的 xAI OAuth 登录
         settings_config_json: r#"{"config":""}"#,
+    },
+    OfficialProviderSeed {
+        id: ANTIGRAVITY_OFFICIAL_PROVIDER_ID,
+        app_type: AppType::Antigravity,
+        name: "Antigravity Official",
+        website_url: "https://antigravity.google/",
+        icon: "antigravity",
+        icon_color: "#4285F4",
+        // oauth 无 token = 摘掉 modelProvider 并清 API key 环境变量，
+        // 不接管 agy 自身的 Google 登录态（token 文件原样保留）
+        settings_config_json: r#"{"authType":"oauth"}"#,
     },
 ];
 

@@ -23,15 +23,10 @@ use crate::store::AppState;
 
 // Re-export sub-module functions for external access
 pub use live::{
-    import_default_config, import_hermes_providers_from_live, import_openclaw_providers_from_live,
-    import_opencode_providers_from_live, read_live_settings,
+    import_default_config, import_opencode_providers_from_live, read_live_settings,
     should_import_default_config_on_startup, sync_current_to_live,
     update_toml_common_config_snippet,
 };
-
-pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError> {
-    pi::import_from_live(state)
-}
 
 // Internal re-exports (pub(crate))
 pub(crate) use live::sanitize_claude_settings_for_live;
@@ -340,32 +335,6 @@ mod tests {
                 "apiKey": "test-key",
                 "api": "openai-completions",
                 "models": [],
-            }),
-            website_url: None,
-            category: Some("custom".to_string()),
-            created_at: Some(1),
-            sort_index: Some(0),
-            notes: None,
-            meta: None,
-            icon: None,
-            icon_color: None,
-            in_failover_queue: false,
-        }
-    }
-
-    fn hermes_provider(id: &str) -> Provider {
-        Provider {
-            id: id.to_string(),
-            name: format!("Provider {id}"),
-            settings_config: json!({
-                "api": "openai-chat",
-                "base_url": "https://api.example.com/v1",
-                "api_key": "test-key",
-                "models": {
-                    "gpt-4o": {
-                        "name": "GPT-4o"
-                    }
-                }
             }),
             website_url: None,
             category: Some("custom".to_string()),
@@ -3718,122 +3687,6 @@ wire_api = "responses"
             );
         });
     }
-    #[test]
-    #[serial]
-    fn import_openclaw_providers_from_live_marks_provider_as_live_managed() {
-        with_test_home(|state, _| {
-            let mut provider = openclaw_provider("imported-openclaw");
-            provider.settings_config["models"] = json!([
-                {
-                    "id": "claude-sonnet-4",
-                    "name": "Claude Sonnet 4"
-                }
-            ]);
-            crate::openclaw_config::set_provider(&provider.id, provider.settings_config.clone())
-                .expect("seed openclaw live provider");
-
-            let imported = import_openclaw_providers_from_live(state)
-                .expect("import openclaw providers from live");
-            assert_eq!(imported, 1);
-
-            let saved = state
-                .db
-                .get_provider_by_id(&provider.id, AppType::OpenClaw.as_str())
-                .expect("query imported openclaw provider")
-                .expect("imported openclaw provider should exist");
-            assert_eq!(
-                saved
-                    .meta
-                    .as_ref()
-                    .and_then(|meta| meta.live_config_managed),
-                Some(true),
-                "providers imported from live should be treated as live-managed"
-            );
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn import_openclaw_providers_from_live_updates_existing_provider_from_live() {
-        with_test_home(|state, _| {
-            let mut provider = openclaw_provider("existing-openclaw");
-            provider.settings_config["models"] = json!([
-                {
-                    "id": "claude-sonnet-4",
-                    "name": "Claude Sonnet 4"
-                }
-            ]);
-            state
-                .db
-                .save_provider(AppType::OpenClaw.as_str(), &provider)
-                .expect("seed existing openclaw provider");
-
-            let mut live_settings = provider.settings_config.clone();
-            live_settings["baseUrl"] = Value::String("https://api.example.com/v1".to_string());
-            live_settings["models"][0]["name"] = Value::String("Claude Sonnet 4.1".to_string());
-            crate::openclaw_config::set_provider(&provider.id, live_settings)
-                .expect("seed edited live openclaw provider");
-
-            let updated = import_openclaw_providers_from_live(state)
-                .expect("import openclaw providers from live");
-            assert_eq!(updated, 1);
-
-            let saved = state
-                .db
-                .get_provider_by_id(&provider.id, AppType::OpenClaw.as_str())
-                .expect("query updated openclaw provider")
-                .expect("openclaw provider should exist");
-            assert_eq!(saved.name, provider.name);
-            assert_eq!(
-                saved.settings_config["baseUrl"],
-                json!("https://api.example.com/v1")
-            );
-            assert_eq!(
-                saved.settings_config["models"][0]["name"],
-                json!("Claude Sonnet 4.1")
-            );
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn import_hermes_providers_from_live_updates_existing_provider_from_live() {
-        with_test_home(|state, _| {
-            let provider = hermes_provider("existing-hermes");
-            state
-                .db
-                .save_provider(AppType::Hermes.as_str(), &provider)
-                .expect("seed existing hermes provider");
-
-            let mut live_settings = provider.settings_config.clone();
-            live_settings["base_url"] = Value::String("https://api.hermes.example/v1".to_string());
-            live_settings["models"]["gpt-4o"]["name"] = Value::String("GPT-4o Updated".to_string());
-            crate::hermes_config::set_provider(&provider.id, live_settings)
-                .expect("seed edited live hermes provider");
-
-            let updated = import_hermes_providers_from_live(state)
-                .expect("import hermes providers from live");
-            assert_eq!(updated, 1);
-
-            let saved = state
-                .db
-                .get_provider_by_id(&provider.id, AppType::Hermes.as_str())
-                .expect("query updated hermes provider")
-                .expect("hermes provider should exist");
-            assert_eq!(saved.name, provider.name);
-            assert_eq!(
-                saved.settings_config["base_url"],
-                json!("https://api.hermes.example/v1")
-            );
-            // models are denormalized from YAML dict to UI-friendly array by
-            // get_providers(), so access by index rather than dict key
-            assert_eq!(
-                saved.settings_config["models"][0]["name"],
-                json!("GPT-4o Updated")
-            );
-            assert_eq!(saved.settings_config["models"][0]["id"], json!("gpt-4o"));
-        });
-    }
 
     #[test]
     #[serial]
@@ -5788,6 +5641,7 @@ impl ProviderService {
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
             AppType::Pi => Ok(String::new()),
             AppType::Omp => Ok(String::new()), // omp 无通用配置片段机制
+            AppType::Antigravity => Ok(String::new()), // agy 无通用配置片段机制
         }
     }
 
@@ -5807,6 +5661,7 @@ impl ProviderService {
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
             AppType::Pi => Ok(String::new()),
             AppType::Omp => Ok(String::new()), // omp 无通用配置片段机制
+            AppType::Antigravity => Ok(String::new()), // agy 无通用配置片段机制
         }
     }
 
@@ -6579,6 +6434,31 @@ impl ProviderService {
                 // omp 供应商校验在前端 validateOmpConfig + commands/omp.rs 落盘路径完成；
                 // 该验证器服务 SQLite 供应商体系，omp 不经过此流程。
             }
+            AppType::Antigravity => {
+                if !provider.settings_config.is_object() {
+                    return Err(AppError::localized(
+                        "provider.antigravity.settings.not_object",
+                        "Antigravity 配置必须是 JSON 对象",
+                        "Antigravity configuration must be a JSON object",
+                    ));
+                }
+                let auth_type = provider
+                    .settings_config
+                    .get("authType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if auth_type != crate::antigravity_config::AUTH_TYPE_API_KEY
+                    && auth_type != crate::antigravity_config::AUTH_TYPE_OAUTH
+                {
+                    return Err(AppError::localized(
+                        "provider.antigravity.auth_type.invalid",
+                        "Antigravity 配置的 authType 必须是 api-key 或 oauth",
+                        "Antigravity config authType must be api-key or oauth",
+                    ));
+                }
+                // api-key 缺失的强校验在切换落盘时做（write_antigravity_provider_live），
+                // 这里保持"先建条目、稍后补 key"的弹性
+            }
         }
 
         // Validate and clean UsageScript configuration (common for all app types)
@@ -6825,6 +6705,23 @@ impl ProviderService {
                 let base_url = parsed
                     .get("baseUrl")
                     .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Ok((api_key, base_url))
+            }
+
+            // agy（api-key 供应商）：凭据在 env map 的 Google 专属键里；
+            // oauth 账号无静态凭据，返回空由调用方兜底。
+            AppType::Antigravity => {
+                let env = provider.settings_config.get("env");
+                let api_key = env
+                    .and_then(|e| e.get("GEMINI_API_KEY"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let base_url = env
+                    .and_then(|e| e.get("GOOGLE_GEMINI_BASE_URL"))
+                    .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
                 Ok((api_key, base_url))

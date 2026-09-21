@@ -2,16 +2,17 @@
 
 English | 简体中文（当前）
 
-**Grok Build 与 Oh My Pi 的统一桌面配置工具。**
+**Grok Build、Oh My Pi 与 Antigravity 的统一桌面配置工具。**
 
 [![Release](https://img.shields.io/github/v/release/akiteet/ogg-switch?style=flat-square)](https://github.com/akiteet/ogg-switch/releases)
 [![License](https://img.shields.io/github/license/akiteet/ogg-switch?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)](#下载)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB?style=flat-square)](https://tauri.app)
 
-OGG Switch 将两个最强大的 AI 编程运行时——xAI 的 **Grok Build** 与
-**Oh My Pi (OMP)**——整合到同一个桌面界面中。它会读取你现有的本地配置，以清晰、
-可搜索的目录形式呈现，并让两个运行时始终保持同步，无需你再手动编辑 YAML 文件。
+OGG Switch 将三个最强大的 AI 编程运行时——xAI 的 **Grok Build**、
+**Oh My Pi (OMP)** 与 Google 的 **Antigravity CLI (agy)**——整合到同一个桌面界面中。
+它会读取你现有的本地配置，以清晰、可搜索的目录形式呈现，并让各运行时始终保持同步，
+无需你再手动编辑 YAML 文件。
 
 OGG Switch 基于 **Tauri 2** 与 **Rust** 构建，是一个约 25 MB 的原生二进制程序，
 零遥测、不依赖云端。你的密钥与配置永远不会离开本机。
@@ -39,6 +40,10 @@ OGG Switch 基于 **Tauri 2** 与 **Rust** 构建，是一个约 25 MB 的原生
 - Grok Build 模式管理 xAI 运行时（TOML 配置、模型回退链、路由）
 - Oh My Pi 模式直接操作 `models.yml` / `config.yml`，供应商库会保留已移除的
   条目，随时可恢复
+- Antigravity 模式管理 Google 的 `agy`：API Key/中转站供应商通过
+  `~/.gemini/antigravity-cli/settings.json` 加持久环境变量
+  （`GEMINI_API_KEY` / `GOOGLE_GEMINI_BASE_URL`）切换；Google 多账号通过
+  快照/恢复 `antigravity-oauth-token` 实现
 - 一键将现有生效配置导入为受管配置档
 
 **生产级基础设施**
@@ -130,6 +135,7 @@ OGG Switch 直接操作运行时本身已经在用的配置文件——不会把
 |--------|------|
 | OGG Switch | `~/.ogg-switch/`（配置档、代理状态、用量数据） |
 | Oh My Pi | `~/.omp/agent/models.yml`（供应商）与 `~/.omp/agent/config.yml`（角色、重试链） |
+| Antigravity (agy) | `~/.gemini/antigravity-cli/settings.json`（`modelProvider`）、持久环境变量（`GEMINI_API_KEY`、`GOOGLE_GEMINI_BASE_URL`）与 `~/.gemini/antigravity-cli/antigravity-oauth-token`（Google 账号快照） |
 
 ---
 

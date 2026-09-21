@@ -55,7 +55,11 @@ const ompProviderToProvider = (provider: OmpProviderConfig): Provider => ({
   icon: provider.icon,
   sortIndex: provider.sortIndex ?? undefined,
   // ompInConfig 供 ProviderList 判定成员状态（库条目显示「添加」）
-  meta: { ompInConfig: provider.inConfig !== false },
+  // usage_script 真源在 omp meta store，合入 meta 供用量查询体系使用
+  meta: {
+    ompInConfig: provider.inConfig !== false,
+    ...(provider.usage_script ? { usage_script: provider.usage_script } : {}),
+  },
 });
 
 const fetchOmpProviders = async (): Promise<ProvidersQueryData> => {

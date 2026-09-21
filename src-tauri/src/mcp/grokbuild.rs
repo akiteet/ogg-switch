@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::app_config::{McpApps, McpServer, MultiAppConfig};
 use crate::error::AppError;
 
-use super::codex::json_server_to_toml_table;
+use super::toml_convert::json_server_to_toml_table;
 use super::validation::validate_server_spec;
 
 fn should_sync_grokbuild_mcp() -> bool {

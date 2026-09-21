@@ -336,7 +336,22 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        // 19. Profiles 表（全应用共享的项目实体，payload 按 app 分槽快照
+        // 19. Antigravity Google 账号池（独立于供应商；官方登录始终走 antigravity-official）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS antigravity_accounts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                email TEXT,
+                auth_payload TEXT NOT NULL,
+                is_current INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 20. Profiles 表（全应用共享的项目实体，payload 按 app 分槽快照
         //     供应商/MCP/Skills/Prompt；各应用分组的 current 标记在 settings 表）
         conn.execute(
             "CREATE TABLE IF NOT EXISTS profiles (
@@ -347,6 +362,26 @@ impl Database {
                 created_at INTEGER,
                 updated_at INTEGER
             )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 21. 供应商切换时间线（会话用量归属用）
+        // 只追加切换观测（app_type, provider_id, observed_at），不记录名称；
+        // 展示名读取时 JOIN providers 解析。见 services/provider_timeline.rs。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS provider_switch_timeline (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                observed_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provider_switch_timeline_lookup
+             ON provider_switch_timeline(app_type, observed_at DESC)",
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -548,6 +583,16 @@ impl Database {
                         log::info!("迁移数据库从 v17 到 v18（会话日志字节游标列）");
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
+                    }
+                    18 => {
+                        log::info!("迁移数据库从 v18 到 v19（Antigravity Google 账号池）");
+                        Self::migrate_v18_to_v19(conn)?;
+                        Self::set_user_version(conn, 19)?;
+                    }
+                    19 => {
+                        log::info!("迁移数据库从 v19 到 v20（供应商切换时间线）");
+                        Self::migrate_v19_to_v20(conn)?;
+                        Self::set_user_version(conn, 20)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1558,7 +1603,7 @@ impl Database {
     /// schema migration already owns the Database connection mutex.
     fn migrate_v15_to_v16(conn: &Connection) -> Result<(), AppError> {
         let codex_dir = crate::codex_config::get_codex_config_dir();
-        crate::services::session_usage_codex::reset_codex_usage_on_conn(conn, &codex_dir)
+        crate::services::codex_usage_reset::reset_codex_usage_on_conn(conn, &codex_dir)
     }
 
     /// v16 -> v17: preserve session request identities after detail rollup.
@@ -1597,6 +1642,42 @@ impl Database {
             )?;
         }
         Ok(())
+    }
+
+    /// v18 -> v19: Google 账号从供应商表拆到独立账号池。
+    fn migrate_v18_to_v19(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS antigravity_accounts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                email TEXT,
+                auth_payload TEXT NOT NULL,
+                is_current INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// v19 -> v20: 供应商切换时间线（会话用量按时间归属供应商）。
+    ///
+    /// 只追加观测记录；从本版起新会话可精确归属，更早的历史会话本地无
+    /// 证据、保持占位来源（不编造）。
+    fn migrate_v19_to_v20(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS provider_switch_timeline (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                observed_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_provider_switch_timeline_lookup
+             ON provider_switch_timeline(app_type, observed_at DESC);",
+        )
+        .map_err(|error| AppError::Database(format!("创建供应商切换时间线失败: {error}")))
     }
 
     /// 插入默认模型定价数据
@@ -3793,6 +3874,31 @@ mod tests {
         )?;
         assert_eq!(byte_offset, None, "存量行的字节游标必须为 NULL");
         assert_eq!(fingerprint, None, "存量行的尾部指纹必须为 NULL");
+        Ok(())
+    }
+
+    #[test]
+    fn migrate_v19_to_v20_creates_provider_switch_timeline() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        Database::set_user_version(&conn, 19)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        assert!(Database::table_exists(&conn, "provider_switch_timeline")?);
+        conn.execute(
+            "INSERT INTO provider_switch_timeline (app_type, provider_id, observed_at)
+             VALUES ('antigravity', 'antigravity-official', 1)",
+            [],
+        )?;
+        let (provider, observed): (String, i64) = conn.query_row(
+            "SELECT provider_id, observed_at FROM provider_switch_timeline
+             WHERE app_type = 'antigravity'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(provider, "antigravity-official");
+        assert_eq!(observed, 1);
         Ok(())
     }
 }

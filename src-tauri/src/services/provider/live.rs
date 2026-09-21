@@ -532,6 +532,7 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
         | AppType::Hermes
         | AppType::Pi
         | AppType::Omp
+        | AppType::Antigravity
         | AppType::ClaudeDesktop => false,
     }
 }
@@ -608,6 +609,7 @@ pub(crate) fn remove_common_config_from_settings(
         | AppType::Hermes
         | AppType::Pi
         | AppType::Omp
+        | AppType::Antigravity
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -669,6 +671,7 @@ fn apply_common_config_to_settings(
         | AppType::Hermes
         | AppType::Pi
         | AppType::Omp
+        | AppType::Antigravity
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -1069,6 +1072,21 @@ fn restore_live_settings_for_provider_backfill(
         }
         return settings;
     }
+    if matches!(app_type, AppType::Antigravity) {
+        let mut settings = live_settings;
+        // 官方条目（无凭据快照）不得吸收 live 的 agy 登录态，否则
+        // "不接管登录凭据"的语义会被回填悄悄改写成"接管该账号"。
+        // 账号条目则借回填刷新快照（agy 会滚动续期）。
+        let managed_account = provider.settings_config.get("token").is_some()
+            || provider.settings_config.get("credential").is_some();
+        if !managed_account {
+            if let Some(obj) = settings.as_object_mut() {
+                obj.remove("token");
+                obj.remove("credential");
+            }
+        }
+        return settings;
+    }
     if !matches!(app_type, AppType::Codex) {
         return live_settings;
     }
@@ -1328,6 +1346,9 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
         }
         AppType::GrokBuild => {
             crate::grok_config::write_grok_provider_live(provider)?;
+        }
+        AppType::Antigravity => {
+            crate::antigravity_config::write_antigravity_provider_live(provider)?;
         }
         AppType::OpenCode => {
             // OpenCode uses additive mode - write provider to config
@@ -1839,6 +1860,9 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             }
             Ok(Value::Object(result))
         }
+        // agy live 快照：settings.json 的 modelProvider + 持久环境变量 +
+        // token 文件，形状与 Provider.settings_config 一致，供切换回填使用。
+        AppType::Antigravity => crate::antigravity_config::read_antigravity_live_settings(),
     }
 }
 
@@ -1957,6 +1981,23 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
                 "OMP providers are imported from ~/.omp/agent/models.yml by the OMP service"
                     .to_string(),
             ));
+        }
+        AppType::Antigravity => {
+            let snapshot = crate::antigravity_config::read_antigravity_live_settings()?;
+            let is_api_key = snapshot.get("authType").and_then(Value::as_str)
+                == Some(crate::antigravity_config::AUTH_TYPE_API_KEY);
+            let has_token = snapshot.get("token").is_some();
+            if !is_api_key && !has_token {
+                // 官方裸登录态（无 API key 也无可导入的登录凭据）：启动自动导入
+                // 按全项目惯例不产出官方条目 → 报错由上层静默跳过；
+                // 手动导入走 import_antigravity_from_live 命令补官方 seed。
+                return Err(AppError::localized(
+                    "antigravity.import.official_state",
+                    "Antigravity 当前为 Google 官方登录态（无 API Key 配置且无受管账号可导入）",
+                    "Antigravity is in official Google login state (no API key config and no managed account to import)",
+                ));
+            }
+            snapshot
         }
     };
 
@@ -2203,162 +2244,6 @@ pub fn import_opencode_providers_from_live(state: &AppState) -> Result<usize, Ap
 
         imported += 1;
         log::info!("Imported OpenCode provider '{id}' from live config");
-    }
-
-    Ok(imported + updated)
-}
-
-/// Import all providers from OpenClaw live config to database
-///
-/// This imports existing providers from ~/.openclaw/openclaw.json
-/// into the OGG Switch database. Each provider found will be added to the
-/// database with is_current set to false.
-pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, AppError> {
-    use crate::openclaw_config;
-
-    let providers = openclaw_config::get_typed_providers()?;
-    if providers.is_empty() {
-        return Ok(0);
-    }
-
-    let mut imported = 0;
-    let mut updated = 0;
-    let existing_ids = state.db.get_provider_ids("openclaw")?;
-
-    for (id, config) in providers {
-        // Validate: skip entries with empty id or no models
-        if id.trim().is_empty() {
-            log::warn!("Skipping OpenClaw provider with empty id");
-            continue;
-        }
-        if config.models.is_empty() {
-            log::warn!("Skipping OpenClaw provider '{id}': no models defined");
-            continue;
-        }
-
-        // Convert to Value for settings_config
-        let settings_config = match serde_json::to_value(&config) {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("Failed to serialize OpenClaw provider '{id}': {e}");
-                continue;
-            }
-        };
-
-        if existing_ids.contains(&id) {
-            match state.db.get_provider_by_id(&id, "openclaw") {
-                Ok(Some(existing)) => {
-                    if existing.settings_config != settings_config {
-                        let mut provider = existing;
-                        provider.settings_config = settings_config;
-                        if let Err(e) = state.db.save_provider("openclaw", &provider) {
-                            log::warn!(
-                                "Failed to update OpenClaw provider '{id}' from live config: {e}"
-                            );
-                        } else {
-                            updated += 1;
-                            log::info!("Updated OpenClaw provider '{id}' from live config");
-                        }
-                    }
-                }
-                Ok(None) => {
-                    log::warn!("OpenClaw provider '{id}' disappeared while importing live config")
-                }
-                Err(e) => log::warn!("Failed to look up OpenClaw provider '{id}': {e}"),
-            }
-            continue;
-        }
-
-        // Determine display name: use first model name if available, otherwise use id
-        let display_name = config
-            .models
-            .first()
-            .and_then(|m| m.name.clone())
-            .unwrap_or_else(|| id.clone());
-
-        // Create provider
-        let mut provider = Provider::with_id(id.clone(), display_name, settings_config, None);
-        provider.meta = Some(crate::provider::ProviderMeta {
-            live_config_managed: Some(true),
-            ..Default::default()
-        });
-
-        // Save to database
-        if let Err(e) = state.db.save_provider("openclaw", &provider) {
-            log::warn!("Failed to import OpenClaw provider '{id}': {e}");
-            continue;
-        }
-
-        imported += 1;
-        log::info!("Imported OpenClaw provider '{id}' from live config");
-    }
-
-    Ok(imported + updated)
-}
-
-/// Import all providers from Hermes live config to database
-///
-/// This imports existing providers from ~/.hermes/config.yaml
-/// into the OGG Switch database. Each provider found will be added to the
-/// database with is_current set to false.
-pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppError> {
-    use crate::hermes_config;
-
-    let providers = hermes_config::get_providers()?;
-    if providers.is_empty() {
-        return Ok(0);
-    }
-
-    let mut imported = 0;
-    let mut updated = 0;
-    let existing_ids = state.db.get_provider_ids("hermes")?;
-
-    for (name, config) in providers {
-        // Validate: skip entries with empty name
-        if name.trim().is_empty() {
-            log::warn!("Skipping Hermes provider with empty name");
-            continue;
-        }
-
-        if existing_ids.contains(&name) {
-            match state.db.get_provider_by_id(&name, "hermes") {
-                Ok(Some(existing)) => {
-                    if existing.settings_config != config {
-                        let mut provider = existing;
-                        provider.settings_config = config;
-                        if let Err(e) = state.db.save_provider("hermes", &provider) {
-                            log::warn!(
-                                "Failed to update Hermes provider '{name}' from live config: {e}"
-                            );
-                        } else {
-                            updated += 1;
-                            log::info!("Updated Hermes provider '{name}' from live config");
-                        }
-                    }
-                }
-                Ok(None) => {
-                    log::warn!("Hermes provider '{name}' disappeared while importing live config")
-                }
-                Err(e) => log::warn!("Failed to look up Hermes provider '{name}': {e}"),
-            }
-            continue;
-        }
-
-        // Create provider
-        let mut provider = Provider::with_id(name.clone(), name.clone(), config, None);
-        provider.meta = Some(crate::provider::ProviderMeta {
-            live_config_managed: Some(true),
-            ..Default::default()
-        });
-
-        // Save to database
-        if let Err(e) = state.db.save_provider("hermes", &provider) {
-            log::warn!("Failed to import Hermes provider '{name}': {e}");
-            continue;
-        }
-
-        imported += 1;
-        log::info!("Imported Hermes provider '{name}' from live config");
     }
 
     Ok(imported + updated)

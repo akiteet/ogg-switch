@@ -6,7 +6,11 @@ import { settingsApi, type AppId } from "@/lib/api";
 import type { SettingsFormState } from "./useSettingsForm";
 
 // Oh My Pi 的目录固定在 ~/.omp/agent，不参与可覆盖的目录设置。
-export type DirectoryAppId = Exclude<AppId, "claude-desktop" | "omp">;
+// Antigravity v1 同样不开放目录覆盖 UI（后端 antigravityConfigDir 保留）。
+export type DirectoryAppId = Exclude<
+  AppId,
+  "claude-desktop" | "omp" | "antigravity"
+>;
 type AppDirectoryKey =
   | "claude"
   | "codex"

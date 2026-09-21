@@ -20,8 +20,7 @@ import type { CodexProviderPreset } from "@/config/codexProviderPresets";
 import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
 import type { ClaudeDesktopProviderPreset } from "@/config/claudeDesktopProviderPresets";
 import type { OpenCodeProviderPreset } from "@/config/opencodeProviderPresets";
-import type { OpenClawProviderPreset } from "@/config/openclawProviderPresets";
-import type { HermesProviderPreset } from "@/config/hermesProviderPresets";
+import type { AntigravityProviderPreset } from "@/config/antigravityProviderPresets";
 import type { PiProviderPreset } from "@/config/piProviderPresets";
 import type { ProviderCategory } from "@/types";
 import {
@@ -46,9 +45,8 @@ export type AnyPreset =
   | GeminiProviderPreset
   | ClaudeDesktopProviderPreset
   | OpenCodeProviderPreset
-  | OpenClawProviderPreset
-  | HermesProviderPreset
-  | PiProviderPreset;
+  | PiProviderPreset
+  | AntigravityProviderPreset;
 
 export type PresetEntry = {
   id: string;
@@ -380,10 +378,14 @@ export function ProviderPresetSelector({
         onClick={() => onPresetChange(entry.id)}
         className={`${getPresetButtonClass(isSelected, entry.preset)} relative`}
         style={getPresetButtonStyle(isSelected, entry.preset)}
-        title={presetCategoryLabels[presetCategory] ?? t("providerPreset.other")}
+        title={
+          presetCategoryLabels[presetCategory] ?? t("providerPreset.other")
+        }
       >
         {renderPresetIcon(entry.preset, isSelected)}
-        <span className="truncate">{getPresetDisplayName(entry.preset, t)}</span>
+        <span className="truncate">
+          {getPresetDisplayName(entry.preset, t)}
+        </span>
         {isPrimePartner ? (
           <Heart
             className="absolute -top-1 -right-1 h-5 w-5 fill-amber-500 text-amber-500 drop-shadow-sm"
@@ -496,8 +498,7 @@ export function ProviderPresetSelector({
 
           {groupedHeaders.map((group) => {
             const groupEntries = visiblePresetEntries.filter(
-              (entry) =>
-                (entry.preset.category ?? "others") === group.category,
+              (entry) => (entry.preset.category ?? "others") === group.category,
             );
             if (groupEntries.length === 0) {
               return null;

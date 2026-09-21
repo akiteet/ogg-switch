@@ -10,7 +10,7 @@ use crate::opencode_config::get_opencode_dir;
 
 /// 返回指定应用所使用的提示词文件路径。
 pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
-    if matches!(app, AppType::ClaudeDesktop) {
+    if matches!(app, AppType::ClaudeDesktop | AppType::Antigravity) {
         return Err(AppError::localized(
             "app.prompts_unsupported",
             "当前应用暂不支持 Prompts",
@@ -28,6 +28,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir()?,
         AppType::Omp => crate::config::get_home_dir().join(".omp").join("agent"),
+        AppType::Antigravity => unreachable!("handled above"),
         AppType::ClaudeDesktop => unreachable!("handled above"),
     };
 
@@ -40,6 +41,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         // omp 与 Pi 同源（pi 分支）：AGENTS.md 约定一致，
         // 且 omp --append-system-prompt 支持文件内容。
         AppType::Pi | AppType::Omp => "AGENTS.md",
+        AppType::Antigravity => unreachable!("handled above"),
         AppType::ClaudeDesktop => unreachable!("handled above"),
     };
 

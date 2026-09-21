@@ -1298,7 +1298,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "requires symlink privilege (Developer Mode or admin)")]
+    #[cfg_attr(
+        windows,
+        ignore = "requires symlink privilege (Developer Mode or admin)"
+    )]
     fn symlink_cycle_does_not_cause_stack_overflow() {
         let temp = tempdir().expect("tempdir");
         let sessions = temp.path().join("sessions");

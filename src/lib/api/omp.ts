@@ -29,6 +29,17 @@ export async function saveOmpProvider(
   return invoke("save_omp_provider", { provider });
 }
 
+/** 保存 omp 供应商的用量查询脚本（真源 = OGG meta store） */
+export async function updateOmpProviderUsageScript(
+  providerId: string,
+  usageScript: import("@/types").UsageScript,
+): Promise<boolean> {
+  return invoke("update_omp_provider_usage_script", {
+    id: providerId,
+    usageScript,
+  });
+}
+
 export async function deleteOmpProvider(providerId: string): Promise<void> {
   return invoke("delete_omp_provider", { providerId });
 }
@@ -70,7 +81,9 @@ export interface OmpAuthStatus {
 }
 
 /** Query real login status + accounts for a provider via `omp token <p> --list`. */
-export async function ompAuthStatus(providerId: string): Promise<OmpAuthStatus> {
+export async function ompAuthStatus(
+  providerId: string,
+): Promise<OmpAuthStatus> {
   return invoke<OmpAuthStatus>("omp_auth_status", { providerId });
 }
 
@@ -85,9 +98,9 @@ export async function ompAuthLogout(providerId: string): Promise<void> {
 }
 
 /** List models known to `omp models --json`, optionally filtered by provider. */
-export async function ompListModels(providerId: string): Promise<
-  import("@/types/omp").OmpModelInfo[]
-> {
+export async function ompListModels(
+  providerId: string,
+): Promise<import("@/types/omp").OmpModelInfo[]> {
   return invoke<import("@/types/omp").OmpModelInfo[]>("omp_list_models", {
     providerId,
   });

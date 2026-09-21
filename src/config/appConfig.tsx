@@ -16,10 +16,7 @@ export interface AppConfig {
   badgeClass: string;
 }
 
-export const APP_IDS: AppId[] = [
-  "grokbuild",
-  "omp",
-];
+export const APP_IDS: AppId[] = ["grokbuild", "antigravity", "omp"];
 
 export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   claude: false,
@@ -32,15 +29,11 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   hermes: false,
   pi: false,
   omp: true,
+  antigravity: true,
 };
 
 /** App IDs shown in Skills panels. */
-export const SKILLS_APP_IDS: AppId[] = [
-  "grokbuild",
-  // omp 原生支持 skills（~/.omp/agent/skills，与 Pi 同源的 exists=active 语义），
-  // 后端 AppType::Omp 已接入技能体系
-  "omp",
-];
+export const SKILLS_APP_IDS: AppId[] = ["grokbuild", "omp", "antigravity"];
 
 export type ProxyAppId = Extract<
   AppId,
@@ -48,9 +41,7 @@ export type ProxyAppId = Extract<
 >;
 
 /** Apps with a complete local gateway + failover data plane. */
-export const PROXY_APP_IDS: ProxyAppId[] = [
-  "grokbuild",
-];
+export const PROXY_APP_IDS: ProxyAppId[] = ["grokbuild"];
 
 export function isProxyAppId(appId: string): appId is ProxyAppId {
   return (PROXY_APP_IDS as string[]).includes(appId);
@@ -76,10 +67,11 @@ export function isAdditiveAppId(appId: string): appId is AdditiveAppId {
 }
 
 /** Pi has no native MCP registry; do not manufacture a disabled mirror. */
-export type McpAppId = Exclude<AppId, "claude-desktop" | "openclaw" | "pi">;
-export const MCP_APP_IDS: McpAppId[] = [
-  "grokbuild",
-];
+export type McpAppId = Exclude<
+  AppId,
+  "claude-desktop" | "openclaw" | "pi" | "antigravity"
+>;
+export const MCP_APP_IDS: McpAppId[] = ["grokbuild"];
 
 export function isMcpAppId(appId: string): appId is McpAppId {
   return (MCP_APP_IDS as string[]).includes(appId);
@@ -181,11 +173,28 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   },
   omp: {
     label: "Oh My Pi",
-    icon: <ProviderIcon icon="omp" name="Oh My Pi" size={14} showFallback={false} />,
+    icon: (
+      <ProviderIcon icon="omp" name="Oh My Pi" size={14} showFallback={false} />
+    ),
     activeClass:
       "bg-purple-500/10 ring-1 ring-purple-500/20 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400",
     badgeClass:
       "bg-purple-500/10 text-purple-700 dark:text-purple-300 hover:bg-purple-500/20 border-0 gap-1.5",
+  },
+  antigravity: {
+    label: "Antigravity",
+    icon: (
+      <ProviderIcon
+        icon="antigravity"
+        name="Antigravity"
+        size={14}
+        showFallback={false}
+      />
+    ),
+    activeClass:
+      "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-700 dark:text-sky-300",
+    badgeClass:
+      "bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 border-0 gap-1.5",
   },
 };
 

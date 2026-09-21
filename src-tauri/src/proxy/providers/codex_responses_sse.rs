@@ -66,10 +66,7 @@ fn normalize_frame(frame: String, counter: &mut u64) -> String {
                 return None;
             }
             let obj = value.as_object_mut()?;
-            obj.insert(
-                "sequence_number".to_string(),
-                Value::from(*counter),
-            );
+            obj.insert("sequence_number".to_string(), Value::from(*counter));
             *counter += 1;
             Some(format!(
                 "data: {}\n",
@@ -84,7 +81,11 @@ fn normalize_frame(frame: String, counter: &mut u64) -> String {
             None => out.push_str(line),
         }
     }
-    if modified { out } else { frame }
+    if modified {
+        out
+    } else {
+        frame
+    }
 }
 
 /// Wrap a native-Responses passthrough byte stream so every event carries a

@@ -22,6 +22,18 @@ pub fn session_roots() -> Vec<PathBuf> {
     vec![get_home_dir().join(".omp").join("agent").join("sessions")]
 }
 
+/// 递归列出全部 OMP 会话 JSONL 文件。
+///
+/// 用量导入器与测试共用；排序保证同步顺序稳定。
+pub(crate) fn session_files() -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    for root in session_roots() {
+        collect_session_files(&root, &mut files);
+    }
+    files.sort();
+    Ok(files)
+}
+
 pub fn scan_sessions() -> Vec<SessionMeta> {
     let mut files = Vec::new();
     for root in session_roots() {
@@ -34,8 +46,7 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
 }
 
 pub fn load_messages(path: &Path) -> Result<Vec<SessionMessage>, String> {
-    let file = File::open(path)
-        .map_err(|e| format!("Failed to open OMP session file: {e}"))?;
+    let file = File::open(path).map_err(|e| format!("Failed to open OMP session file: {e}"))?;
     let reader = BufReader::new(file);
     let mut messages = Vec::new();
 
@@ -76,10 +87,7 @@ pub fn delete_session(root: &Path, path: &Path, session_id: &str) -> Result<bool
         ));
     }
     if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-        return Err(format!(
-            "Unexpected OMP session source: {}",
-            path.display()
-        ));
+        return Err(format!("Unexpected OMP session source: {}", path.display()));
     }
     // 文件名形如 <ts>_<sessionId>.jsonl——校验末尾段与 session_id 一致
     let stem = path
@@ -147,9 +155,7 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
                     .get("cwd")
                     .and_then(Value::as_str)
                     .map(|s| s.to_string());
-                created_at = value
-                    .get("timestamp")
-                    .and_then(parse_timestamp_to_ms);
+                created_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
             }
             _ => {}
         }

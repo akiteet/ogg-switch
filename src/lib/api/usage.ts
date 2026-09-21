@@ -19,6 +19,13 @@ import type { UsageResult } from "@/types";
 import type { AppId } from "./types";
 import type { TemplateType } from "@/config/constants";
 
+export interface OmpQuotaWindow {
+  provider: string;
+  usedFraction: number;
+  label?: string | null;
+  resetsAt?: number | null;
+}
+
 export const usageApi = {
   // Provider usage script methods
   query: async (providerId: string, appId: AppId): Promise<UsageResult> => {
@@ -203,8 +210,11 @@ export const usageApi = {
     return invoke("sync_session_usage");
   },
 
-
   getDataSourceBreakdown: async (): Promise<DataSourceSummary[]> => {
     return invoke("get_usage_data_sources");
+  },
+
+  getOmpQuotaWindows: async (): Promise<OmpQuotaWindow[]> => {
+    return invoke("get_omp_quota_windows");
   },
 };

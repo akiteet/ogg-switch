@@ -73,6 +73,7 @@ const APP_FILTER_ICON: Record<AppType, string> = {
   omp: "omp",
   opencode: "opencode",
   pi: "pi",
+  antigravity: "antigravity",
 };
 
 // Select 的 "all" 哨兵和用户自定义名称同处一个值域——真有来源/模型叫 "all"
@@ -152,7 +153,6 @@ export function UsageDashboard({
       setRefreshIntervalMs(previous);
     }
   };
-
 
   // 手动触发一次会话日志同步：手动模式下是唯一的直连用量补录途径，
   // 入口按钮仅在关闭自动扫描时展示（自动模式有后台定时扫描，无需手动触发）
@@ -297,7 +297,7 @@ export function UsageDashboard({
             onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
           >
             <SelectTrigger
-              className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+              className="h-9 w-[160px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
               title={providerName ?? t("usage.filterBySource")}
             >
               <SelectValue />
@@ -322,7 +322,7 @@ export function UsageDashboard({
             onValueChange={(v) => setModel(decodeOptionValue(v))}
           >
             <SelectTrigger
-              className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+              className="h-9 w-[160px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
               title={model ?? t("usage.filterByModel")}
             >
               <SelectValue />
@@ -518,7 +518,6 @@ export function UsageDashboard({
           </AccordionItem>
         </Accordion>
       </div>
-
     </motion.div>
   );
 }

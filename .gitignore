@@ -33,6 +33,8 @@ mainWindow.js
 
 # Internal working notes / planning docs (not for release)
 .trae/
+.zcode/
+.zcodeignore
 HANDOFF.md
 logo_search.md
 missing-logos.md

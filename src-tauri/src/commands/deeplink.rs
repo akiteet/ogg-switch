@@ -22,25 +22,6 @@ pub fn merge_deeplink_config(
     crate::deeplink::parse_and_merge_config(&request).map_err(|e| e.to_string())
 }
 
-/// Import a provider from a deep link request (legacy, kept for compatibility)
-#[tauri::command]
-pub fn import_from_deeplink(
-    state: State<AppState>,
-    request: DeepLinkImportRequest,
-) -> Result<String, String> {
-    log::info!(
-        "Importing provider from deep link: {:?} for app {:?}",
-        request.name,
-        request.app
-    );
-
-    let provider_id = import_provider_from_deeplink(&state, request).map_err(|e| e.to_string())?;
-
-    log::info!("Successfully imported provider with ID: {provider_id}");
-
-    Ok(provider_id)
-}
-
 /// Import resource from a deep link request (unified handler)
 #[tauri::command]
 pub async fn import_from_deeplink_unified(

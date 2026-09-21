@@ -323,7 +323,10 @@ pub fn apply_proxy_takeover(
     // relay, where grok CLI 1.0.30 fails (missing `sequence_number`, empty
     // tool names). `name` is auto-filled with the entry key so the model
     // picker shows the model id and `name`-required validation keeps passing.
-    let entry_keys: Vec<String> = model_entries.iter().map(|(key, _)| key.to_string()).collect();
+    let entry_keys: Vec<String> = model_entries
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .collect();
     if entry_keys.is_empty() {
         return Err(AppError::localized(
             "provider.grokbuild.model.missing",
@@ -381,7 +384,10 @@ pub fn strip_proxy_endpoints(config_toml: &str) -> Result<String, AppError> {
                 format!("Invalid Grok Build config.toml: {error}"),
             )
         })?;
-    let should_remove = match document.get_mut("endpoints").and_then(toml_edit::Item::as_table_like_mut) {
+    let should_remove = match document
+        .get_mut("endpoints")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
         Some(table) => {
             table.remove("models_base_url");
             table.remove("xai_api_base_url");
@@ -503,7 +509,6 @@ pub fn list_grok_model_entries(config_toml: &str) -> Vec<GrokModelEntryInfo> {
     entries
 }
 
-
 /// 建立 `[model."<条目名>"]` → 该条目 `model` 字段(真正发给上游的模型名)的映射。
 ///
 /// grok CLI 的 /model 切换的是条目名,代理必须把它翻译成上游模型名。
@@ -591,7 +596,10 @@ pub fn write_grok_provider_live(provider: &Provider) -> Result<(), AppError> {
     if !is_official {
         let auth_path = get_grok_config_dir().join("auth.json");
         if let Err(error) = delete_file(&auth_path) {
-            log::warn!("清理官方登录态失败(不阻断切换) {}: {error}", auth_path.display());
+            log::warn!(
+                "清理官方登录态失败(不阻断切换) {}: {error}",
+                auth_path.display()
+            );
         }
     }
 

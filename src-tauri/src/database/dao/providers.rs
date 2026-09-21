@@ -102,6 +102,10 @@ impl Database {
                 meta.custom_endpoints = custom_endpoints;
             }
 
+            // Google 账号已迁入独立账号池；残留的 antigravity-account-* 供应商不再展示。
+            if app_type == "antigravity" && id.starts_with("antigravity-account-") {
+                continue;
+            }
             providers.insert(id, provider);
         }
 
@@ -403,6 +407,10 @@ impl Database {
             params![id, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 用量归属时间线：切换动作与 is_current 翻转同一事务落库，
+        // 保证"某时刻起启用的供应商"可回溯（services/provider_timeline.rs）。
+        crate::services::provider_timeline::record_switch_on_conn(&tx, app_type, id)?;
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())

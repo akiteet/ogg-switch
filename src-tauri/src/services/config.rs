@@ -146,6 +146,10 @@ impl ConfigService {
                 // omp 的 models.yml/config.yml 由 commands/omp.rs 专用路径管理，
                 // 此处不重写（供应商也不在 SQLite 体系内）。
             }
+            AppType::Antigravity => {
+                // agy 的 live 面 = settings.json + 持久环境变量，写入幂等
+                crate::antigravity_config::write_antigravity_provider_live(&provider)?;
+            }
         }
 
         Ok(())

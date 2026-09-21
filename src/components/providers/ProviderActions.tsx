@@ -2,7 +2,6 @@ import {
   Activity,
   BarChart3,
   Check,
-  ChevronDown,
   Copy,
   Edit,
   Loader2,
@@ -11,25 +10,12 @@ import {
   Plus,
   Terminal,
   Trash2,
-  Zap,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { AppId } from "@/lib/api";
 import { isAdditiveAppId } from "@/config/appConfig";
-
-interface OpenClawDefaultModelOption {
-  id: string;
-  name?: string;
-}
 
 interface ProviderActionsProps {
   appId?: AppId;
@@ -53,14 +39,7 @@ interface ProviderActionsProps {
   isOfficialBlockedByProxy?: boolean;
   /** 隐藏「添加/移除」主按钮（omp 的 OAuth 条目：无成员语义） */
   hideMembershipToggle?: boolean;
-  // Hermes v12+ providers: dict overlay — edit/delete must go through Web UI
-  isReadOnly?: boolean;
-  // OpenClaw: default model
-  isDefaultModel?: boolean;
-  isRemovalProtected?: boolean;
   isStateChangeProtected?: boolean;
-  defaultModelOptions?: OpenClawDefaultModelOption[];
-  onSetAsDefault?: (modelId?: string) => void;
 }
 
 // 主按钮的呈现状态。title 用于 disabled 态向用户解释为何不可点击；
@@ -96,13 +75,7 @@ export function ProviderActions({
   onToggleFailover,
   isOfficialBlockedByProxy = false,
   hideMembershipToggle = false,
-  isReadOnly = false,
-  // OpenClaw: default model
-  isDefaultModel = false,
-  isRemovalProtected = false,
   isStateChangeProtected = false,
-  defaultModelOptions = [],
-  onSetAsDefault,
 }: ProviderActionsProps) {
   const { t } = useTranslation();
   const iconButtonClass = "h-8 w-8 p-1";
@@ -166,7 +139,7 @@ export function ProviderActions({
       };
     }
 
-    // 累加模式（OpenCode 非 OMO / OpenClaw）
+    // 累加模式（OpenCode 非 OMO）
     if (isMembershipMode) {
       if (isStateChangeProtected) {
         return {
@@ -186,11 +159,10 @@ export function ProviderActions({
       }
       if (isInConfig) {
         return {
-          disabled: isRemovalProtected,
+          disabled: false,
           variant: "secondary" as const,
           className: cn(
             "bg-orange-100 text-orange-600 hover:bg-orange-200 dark:bg-orange-900/50 dark:text-orange-400 dark:hover:bg-orange-900/70",
-            isRemovalProtected && "opacity-40 cursor-not-allowed",
           ),
           icon: <Minus className="h-4 w-4" />,
           text: t("provider.removeFromConfig", { defaultValue: "移除" }),
@@ -265,109 +237,18 @@ export function ProviderActions({
 
   const buttonState = getMainButtonState();
   const canDelete =
-    !isReadOnly &&
-    (appId === "pi"
+    appId === "pi"
       ? !isStateChangeProtected
       : isOmo || isAdditiveMode
         ? true
-        : !isCurrent);
-  const readOnlyHint = t("provider.managedByHermesHint", {
-    defaultValue: "由 Hermes 管理，请在 Hermes Web UI 中编辑",
-  });
+        : !isCurrent;
   const deleteHint =
     appId === "pi" && isStateChangeProtected
       ? piStateChangeHint
-      : isReadOnly
-        ? readOnlyHint
-        : t("common.delete");
+      : t("common.delete");
 
   return (
     <div className="flex items-center gap-1.5">
-      {(appId === "openclaw" || appId === "hermes") &&
-        isInConfig &&
-        onSetAsDefault &&
-        (() => {
-          const activeLabel =
-            appId === "hermes"
-              ? t("provider.inUse", { defaultValue: "已在用" })
-              : t("provider.isDefault", { defaultValue: "当前默认" });
-          const inactiveLabel =
-            appId === "hermes"
-              ? t("provider.enable", { defaultValue: "启用" })
-              : t("provider.setAsDefault", { defaultValue: "设为默认" });
-          const defaultButtonClassName = cn(
-            "w-fit px-2.5",
-            isDefaultModel
-              ? "bg-gray-200 text-muted-foreground dark:bg-gray-700 opacity-60 cursor-not-allowed"
-              : "bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700",
-          );
-
-          if (
-            appId === "openclaw" &&
-            !isDefaultModel &&
-            defaultModelOptions.length > 1
-          ) {
-            return (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    size="sm"
-                    variant="default"
-                    className={defaultButtonClassName}
-                  >
-                    <Zap className="h-4 w-4" />
-                    {inactiveLabel}
-                    <ChevronDown className="h-3.5 w-3.5 opacity-70" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  className="max-h-72 min-w-64 overflow-y-auto"
-                >
-                  <DropdownMenuLabel>
-                    {t("openclaw.selectDefaultModel", {
-                      defaultValue: "选择默认模型",
-                    })}
-                  </DropdownMenuLabel>
-                  {defaultModelOptions.map((model) => (
-                    <DropdownMenuItem
-                      key={model.id}
-                      onSelect={() => onSetAsDefault(model.id)}
-                      className="flex min-w-0 flex-col items-start gap-0.5"
-                    >
-                      <span className="max-w-72 truncate">
-                        {model.name?.trim() || model.id}
-                      </span>
-                      {model.name?.trim() && model.name.trim() !== model.id && (
-                        <span className="max-w-72 truncate font-mono text-xs text-muted-foreground">
-                          {model.id}
-                        </span>
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            );
-          }
-
-          return (
-            <Button
-              size="sm"
-              variant={isDefaultModel ? "secondary" : "default"}
-              onClick={
-                isDefaultModel
-                  ? undefined
-                  : () => onSetAsDefault(defaultModelOptions[0]?.id)
-              }
-              disabled={isDefaultModel}
-              className={defaultButtonClassName}
-            >
-              <Zap className="h-4 w-4" />
-              {isDefaultModel ? activeLabel : inactiveLabel}
-            </Button>
-          );
-        })()}
-
       {/* disabled:pointer-events-none prevents the native title from firing,
           so the wrapper owns the explanatory tooltip and cursor.
           omp 为 additive 成员模式：主按钮 = 添加/移除（列表即 live 配置，
@@ -399,14 +280,10 @@ export function ProviderActions({
         <Button
           size="icon"
           variant="ghost"
-          onClick={isReadOnly ? undefined : onEdit}
-          disabled={isReadOnly}
+          onClick={onEdit}
           aria-label={t("common.edit")}
-          title={isReadOnly ? readOnlyHint : t("common.edit")}
-          className={cn(
-            iconButtonClass,
-            isReadOnly && "opacity-40 cursor-not-allowed text-muted-foreground",
-          )}
+          title={t("common.edit")}
+          className={cn(iconButtonClass)}
         >
           <Edit className="h-4 w-4" />
         </Button>

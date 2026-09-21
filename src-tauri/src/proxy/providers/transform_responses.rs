@@ -344,32 +344,6 @@ fn validate_anthropic_web_search_direct_mode(tool: &Value) -> Result<(), ProxyEr
     }
 }
 
-pub(crate) fn anthropic_web_search_tool_name(body: &Value) -> Option<&str> {
-    let tools = body.get("tools").and_then(Value::as_array)?;
-    let forced_name = body
-        .get("tool_choice")
-        .and_then(Value::as_object)
-        .filter(|choice| choice.get("type").and_then(Value::as_str) == Some("tool"))
-        .and_then(|choice| choice.get("name"))
-        .and_then(Value::as_str)
-        .filter(|name| !name.is_empty());
-    if let Some(forced_name) = forced_name.filter(|forced_name| {
-        tools.iter().any(|tool| {
-            is_anthropic_web_search_tool(tool)
-                && tool.get("name").and_then(Value::as_str) == Some(*forced_name)
-        })
-    }) {
-        return Some(forced_name);
-    }
-
-    tools
-        .iter()
-        .find(|tool| is_anthropic_web_search_tool(tool))
-        .and_then(|tool| tool.get("name"))
-        .and_then(Value::as_str)
-        .filter(|name| !name.is_empty())
-}
-
 fn anthropic_web_search_to_responses(
     tool: &Value,
     is_codex_oauth: bool,
@@ -423,32 +397,6 @@ fn anthropic_web_search_to_responses(
     }
 
     Ok((response_tool, max_uses))
-}
-
-pub(crate) fn anthropic_web_search_max_uses(body: &Value) -> Option<u64> {
-    let tools = body.get("tools").and_then(Value::as_array)?;
-    let forced_name = body
-        .get("tool_choice")
-        .and_then(Value::as_object)
-        .filter(|choice| choice.get("type").and_then(Value::as_str) == Some("tool"))
-        .and_then(|choice| choice.get("name"))
-        .and_then(Value::as_str)
-        .filter(|name| {
-            tools.iter().any(|tool| {
-                is_anthropic_web_search_tool(tool)
-                    && tool.get("name").and_then(Value::as_str) == Some(*name)
-            })
-        });
-    tools
-        .iter()
-        .filter(|tool| {
-            is_anthropic_web_search_tool(tool)
-                && forced_name
-                    .is_none_or(|name| tool.get("name").and_then(Value::as_str) == Some(name))
-        })
-        .filter_map(|tool| tool.get("max_uses").and_then(Value::as_u64))
-        .filter(|limit| *limit > 0)
-        .min()
 }
 
 pub(crate) fn web_search_action_input(item: &Value) -> Value {
@@ -3363,10 +3311,6 @@ mod tests {
             "tool_choice": {"type": "tool", "name": "web_search_next"}
         });
 
-        assert_eq!(
-            anthropic_web_search_tool_name(&input),
-            Some("web_search_next")
-        );
         let result = anthropic_to_responses(input, None, true, false).unwrap();
         assert_eq!(
             result["tools"][0],
@@ -3482,10 +3426,6 @@ mod tests {
             "tool_choice": {"type": "tool", "name": "web_search_future"}
         });
 
-        assert_eq!(
-            anthropic_web_search_tool_name(&input),
-            Some("web_search_future")
-        );
         let result = anthropic_to_responses(input, None, true, false).unwrap();
         assert_eq!(result["tool_choice"], "required");
         assert_eq!(result["tools"].as_array().unwrap().len(), 1);
@@ -3685,10 +3625,6 @@ mod tests {
             }]
         });
 
-        assert_eq!(
-            anthropic_web_search_tool_name(&input),
-            Some("web_search_future")
-        );
         let error = anthropic_to_responses(input, None, true, false).unwrap_err();
         assert!(error.to_string().contains("version 'web_search_20991231'"));
         assert!(error.to_string().contains("not supported"));

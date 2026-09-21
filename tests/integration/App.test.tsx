@@ -3,11 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { http, HttpResponse } from "msw";
-import { providersApi } from "@/lib/api/providers";
 import {
   resetProviderState,
   setCurrentProviderId,
-  setLiveProviderIds,
   setProviders,
   setSettings,
 } from "../msw/state";
@@ -23,13 +21,12 @@ const skillsPanelMocks = vi.hoisted(() => ({
 
 // OGG 的产品形态是双应用（grokbuild + omp，见 appConfig.APP_IDS）；
 // VisibleApps 的 TS 类型虽只有两个键，App.tsx 用 spread 合并 settings.visibleApps，
-// 运行时会保留额外键——测试借此让 openclaw/pi/claude/codex 的保留代码路径可达。
+// 运行时会保留额外键——测试借此让 pi/claude/codex 的保留代码路径可达。
 const ALL_VISIBLE_APPS = {
   grokbuild: true,
   omp: true,
   claude: true,
   codex: true,
-  openclaw: true,
   pi: true,
 } as unknown as Parameters<typeof setSettings>[0]["visibleApps"];
 
@@ -78,14 +75,17 @@ vi.mock("framer-motion", async (importOriginal) => {
   return {
     ...actual,
     AnimatePresence: ({ children }: any) => children,
-    motion: new Proxy({}, {
-      get: (_target, tag: string) => {
-        if (!cache.has(tag)) {
-          cache.set(tag, passthrough(tag));
-        }
-        return cache.get(tag);
+    motion: new Proxy(
+      {},
+      {
+        get: (_target, tag: string) => {
+          if (!cache.has(tag)) {
+            cache.set(tag, passthrough(tag));
+          }
+          return cache.get(tag);
+        },
       },
-    }),
+    ),
   };
 });
 
@@ -201,7 +201,6 @@ vi.mock("@/components/AppSwitcher", () => ({
       <span data-testid="visible-apps">{JSON.stringify(visibleApps)}</span>
       <button onClick={() => onSwitch("claude")}>switch-claude</button>
       <button onClick={() => onSwitch("codex")}>switch-codex</button>
-      <button onClick={() => onSwitch("openclaw")}>switch-openclaw</button>
       <button onClick={() => onSwitch("pi")}>switch-pi</button>
     </div>
   ),
@@ -386,55 +385,6 @@ describe("App integration with MSW", () => {
     });
   });
 
-  it("duplicates openclaw providers with a generated key that avoids live-only ids", async () => {
-    setProviders("openclaw", {
-      deepseek: {
-        id: "deepseek",
-        name: "DeepSeek",
-        settingsConfig: {
-          baseUrl: "https://api.deepseek.com",
-          apiKey: "test-key",
-          api: "openai-completions",
-          models: [],
-        },
-        category: "custom",
-        sortIndex: 0,
-        createdAt: Date.now(),
-      },
-    });
-    setCurrentProviderId("openclaw", "deepseek");
-    setLiveProviderIds("openclaw", ["deepseek-copy"]);
-
-    const { default: App } = await import("@/App");
-    renderApp(App);
-
-    // 等注入的 visibleApps 经 settings 查询生效，否则点击会被弹回 effect 重置
-    await waitFor(() =>
-      expect(screen.getByTestId("visible-apps").textContent).toContain(
-        "openclaw",
-      ),
-    );
-    fireEvent.click(screen.getByText("switch-openclaw"));
-
-    await waitFor(() =>
-      expect(screen.getByTestId("provider-list").textContent).toContain(
-        "deepseek",
-      ),
-    );
-
-    fireEvent.click(screen.getByText("duplicate"));
-
-    await waitFor(() => {
-      const providerList = screen.getByTestId("provider-list").textContent;
-      expect(providerList).toContain("deepseek-copy-2");
-      expect(providerList).toContain("DeepSeek copy");
-    });
-
-    expect(toastErrorMock).not.toHaveBeenCalledWith(
-      expect.stringContaining("Provider key is required for openclaw"),
-    );
-  });
-
   it("warns without blocking when removing Pi's global default provider", async () => {
     setProviders("pi", {
       custom: {
@@ -483,60 +433,6 @@ describe("App integration with MSW", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument(),
     );
-  });
-
-  it("shows toast when duplicate cannot load live provider ids", async () => {
-    setProviders("openclaw", {
-      deepseek: {
-        id: "deepseek",
-        name: "DeepSeek",
-        settingsConfig: {
-          baseUrl: "https://api.deepseek.com",
-          apiKey: "test-key",
-          api: "openai-completions",
-          models: [],
-        },
-        category: "custom",
-        sortIndex: 0,
-        createdAt: Date.now(),
-      },
-    });
-    setCurrentProviderId("openclaw", "deepseek");
-
-    const liveIdsSpy = vi
-      .spyOn(providersApi, "getOpenClawLiveProviderIds")
-      .mockRejectedValueOnce(new Error("broken config"));
-
-    const { default: App } = await import("@/App");
-    renderApp(App);
-
-    // 等注入的 visibleApps 经 settings 查询生效，否则点击会被弹回 effect 重置
-    await waitFor(() =>
-      expect(screen.getByTestId("visible-apps").textContent).toContain(
-        "openclaw",
-      ),
-    );
-    fireEvent.click(screen.getByText("switch-openclaw"));
-
-    await waitFor(() =>
-      expect(screen.getByTestId("provider-list").textContent).toContain(
-        "deepseek",
-      ),
-    );
-
-    fireEvent.click(screen.getByText("duplicate"));
-
-    await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        expect.stringContaining("读取配置中的供应商标识失败"),
-      );
-    });
-
-    expect(screen.getByTestId("provider-list").textContent).not.toContain(
-      "deepseek-copy",
-    );
-
-    liveIdsSpy.mockRestore();
   });
 
   it("hosts the Skills check-update action in the App toolbar", async () => {

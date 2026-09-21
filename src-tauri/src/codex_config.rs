@@ -2496,11 +2496,6 @@ pub(crate) fn read_limited_string(path: &Path, max_bytes: u64) -> Result<String,
     fs::read_to_string(path).map_err(|error| AppError::io(path, error))
 }
 
-/// Read the cc-switch Codex model catalog file with a size cap.
-pub(crate) fn read_codex_model_catalog_text(path: &Path) -> Result<String, AppError> {
-    read_limited_string(path, MAX_CODEX_CATALOG_BYTES)
-}
-
 /// Given `config.toml` text, resolve the on-disk path of the cc-switch–owned
 /// catalog file (returns `None` if `model_catalog_json` is absent or points at
 /// a file we don't own). Relative paths are resolved under `base_dir`;
@@ -8256,7 +8251,10 @@ model_catalog_json = "cc-switch-model-catalog.json"
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "requires symlink privilege (Developer Mode or admin)")]
+    #[cfg_attr(
+        windows,
+        ignore = "requires symlink privilege (Developer Mode or admin)"
+    )]
     fn resolve_catalog_rejects_symlink_escaping_config_dir() {
         // 词法包含可被符号链接绕过：~/.codex/link -> 外部目录，
         // "link/cc-switch-model-catalog.json" 词法上在 base 内，真实读取却落到

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import type { ManagedAuthProvider } from "@/lib/api";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { XaiOAuthSection } from "@/components/providers/forms/XaiOAuthSection";
+import { AntigravityAuthSection } from "@/components/settings/AntigravityAuthSection";
 
 interface AuthCenterPanelProps {
   authScrollTarget?: ManagedAuthProvider | null;
@@ -48,7 +49,7 @@ export function AuthCenterPanel({ authScrollTarget }: AuthCenterPanelProps) {
             </div>
             <p className="text-sm text-muted-foreground">
               {t("settings.authCenter.description", {
-                defaultValue: "管理 xAI / Grok 账号。",
+                defaultValue: "管理 xAI / Grok 与 Antigravity Google 账号。",
               })}
             </p>
           </div>
@@ -77,6 +78,24 @@ export function AuthCenterPanel({ authScrollTarget }: AuthCenterPanelProps) {
         </div>
 
         <XaiOAuthSection />
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card/60 p-6">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+            <ProviderIcon icon="antigravity" name="Antigravity" size={20} />
+          </div>
+          <div>
+            <h4 className="font-medium">Antigravity</h4>
+            <p className="text-sm text-muted-foreground">
+              {t("settings.authCenter.antigravityDescription", {
+                defaultValue: "管理 Google 账号",
+              })}
+            </p>
+          </div>
+        </div>
+
+        <AntigravityAuthSection />
       </section>
     </div>
   );

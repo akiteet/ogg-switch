@@ -18,6 +18,7 @@ const APP_CONFIG: Array<{
   nameKey: string;
 }> = [
   { id: "grokbuild", icon: "grok", nameKey: "apps.grokbuild" },
+  { id: "antigravity", icon: "antigravity", nameKey: "apps.antigravity" },
   { id: "omp", icon: "omp", nameKey: "apps.omp" },
 ];
 

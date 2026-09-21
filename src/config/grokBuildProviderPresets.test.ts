@@ -68,6 +68,13 @@ describe("grokBuildProviderPresets", () => {
     }
   });
 
+  it("does not mark catalog presets as partners", () => {
+    for (const preset of grokBuildProviderPresets) {
+      expect(preset.isPartner, preset.name).toBeFalsy();
+      expect(preset.partnerPromotionKey, preset.name).toBeUndefined();
+    }
+  });
+
   it("keeps the official preset as an empty-config seed entry", () => {
     expect(grokBuildOfficialPreset.category).toBe("official");
     expect(grokBuildOfficialPreset.isOfficial).toBe(true);

@@ -13,7 +13,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::LazyLock;
 
 /// 使用量汇总
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +216,8 @@ fn provider_name_coalesce(log_alias: &str, provider_alias: &str) -> String {
          WHEN '_opencode_session' THEN 'OpenCode (Session)' \
          WHEN '_grok_session' THEN 'Grok Build (Session)' \
          WHEN '_pi_session' THEN 'Pi (Session)' \
+         WHEN '_omp_session' THEN 'Oh My Pi (Session)' \
+         WHEN '_antigravity_session' THEN 'Antigravity (Session)' \
          ELSE {log_alias}.provider_id END)"
     )
 }
@@ -345,96 +346,6 @@ pub(crate) fn effective_usage_log_filter(log_alias: &str) -> String {
     )
 }
 
-/// 跨源去重指纹键。
-///
-/// `cache_creation_tokens`：Codex/Gemini session 日志不暴露该字段，调用方传 0
-/// 表示"未知"，匹配器会放行 proxy 侧任意 cache_creation_tokens 值。
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DedupKey<'a> {
-    pub app_type: &'a str,
-    pub model: &'a str,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_read_tokens: u32,
-    pub cache_creation_tokens: u32,
-    pub created_at: i64,
-}
-
-/// session 日志写入前的统一去重判定。
-///
-/// 命中以下任一条件即跳过插入：① `request_id` 已存在；② 时间窗口内存在
-/// 与 `key` 匹配的 proxy 日志（指纹去重）。
-pub(crate) fn should_skip_session_insert(
-    conn: &Connection,
-    request_id: &str,
-    key: &DedupKey,
-) -> Result<bool, AppError> {
-    if proxy_request_id_exists(conn, request_id)? {
-        return Ok(true);
-    }
-    has_matching_proxy_usage_log(conn, key)
-}
-
-fn proxy_request_id_exists(conn: &Connection, request_id: &str) -> Result<bool, AppError> {
-    conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM proxy_request_logs WHERE request_id = ?1)")
-        .and_then(|mut stmt| stmt.query_row(params![request_id], |row| row.get::<_, bool>(0)))
-        .map_err(|e| AppError::Database(format!("查询 request_id 失败: {e}")))
-}
-
-// 会话重导每个 token 事件都要跑一次这条查询；SQL 文本静态化让
-// prepare_cached 稳定命中，也省掉每行的 format! 分配。
-static MATCHING_PROXY_USAGE_LOG_SQL: LazyLock<String> = LazyLock::new(|| {
-    let l_data_source = data_source_expr("l");
-    let app_type_match = dedup_app_type_match_sql("l.app_type", "?1");
-    format!(
-        "SELECT EXISTS (
-            SELECT 1
-            FROM proxy_request_logs l
-            WHERE {l_data_source} = 'proxy'
-              AND {app_type_match}
-              AND l.status_code >= 200
-              AND l.status_code < 300
-              AND l.input_tokens = ?3
-              AND l.output_tokens = ?4
-              AND l.cache_read_tokens = ?5
-              AND (l.cache_creation_tokens = ?6 OR ?9 = 1)
-              AND l.created_at BETWEEN ?7 - ?8 AND ?7 + ?8
-              AND (
-                  LOWER(l.model) = LOWER(?2)
-                  OR LOWER(l.model) = 'unknown'
-                  OR LOWER(?2) = 'unknown'
-              )
-        )"
-    )
-});
-
-pub(crate) fn has_matching_proxy_usage_log(
-    conn: &Connection,
-    key: &DedupKey,
-) -> Result<bool, AppError> {
-    let allow_missing_cache_creation =
-        matches!(key.app_type, "codex" | "gemini" | "opencode") && key.cache_creation_tokens == 0;
-
-    conn.prepare_cached(&MATCHING_PROXY_USAGE_LOG_SQL)
-        .and_then(|mut stmt| {
-            stmt.query_row(
-                params![
-                    key.app_type,
-                    key.model,
-                    key.input_tokens as i64,
-                    key.output_tokens as i64,
-                    key.cache_read_tokens as i64,
-                    key.cache_creation_tokens as i64,
-                    key.created_at,
-                    SESSION_PROXY_DEDUP_WINDOW_SECONDS,
-                    allow_missing_cache_creation as i64,
-                ],
-                |row| row.get::<_, bool>(0),
-            )
-        })
-        .map_err(|e| AppError::Database(format!("查询重复代理用量日志失败: {e}")))
-}
-
 /// grokbuild 会话导入的接管活动守卫：给定时刻 ±窗口内存在任何 grokbuild
 /// 代理直录行，即认为当时处于代理接管态，会话事件应整体跳过——同一请求
 /// 已由代理逐请求记账，会话侧再入账必双算。
@@ -467,47 +378,6 @@ pub(crate) fn has_recent_grokbuild_proxy_activity(
         |row| row.get::<_, bool>(0),
     )
     .map_err(|e| AppError::Database(format!("查询 Grok 接管活动失败: {e}")))
-}
-
-static SUSPECTED_CODEX_DUPLICATE_SQL: LazyLock<String> = LazyLock::new(|| {
-    let data_source = data_source_expr("l");
-    format!(
-        "SELECT EXISTS (
-            SELECT 1
-            FROM proxy_request_logs l
-            WHERE l.app_type = 'codex'
-              AND {data_source} = 'codex_session'
-              AND l.request_id <> ?1
-              AND LOWER(l.model) = LOWER(?2)
-              AND l.input_tokens = ?3
-              AND l.output_tokens = ?4
-              AND l.cache_read_tokens = ?5
-              AND l.created_at BETWEEN ?6 - ?7 AND ?6 + ?7
-        )"
-    )
-});
-
-pub(crate) fn has_suspected_codex_session_duplicate(
-    conn: &Connection,
-    request_id: &str,
-    key: &DedupKey,
-) -> Result<bool, AppError> {
-    conn.prepare_cached(&SUSPECTED_CODEX_DUPLICATE_SQL)
-        .and_then(|mut stmt| {
-            stmt.query_row(
-                params![
-                    request_id,
-                    key.model,
-                    key.input_tokens as i64,
-                    key.output_tokens as i64,
-                    key.cache_read_tokens as i64,
-                    key.created_at,
-                    SESSION_PROXY_DEDUP_WINDOW_SECONDS,
-                ],
-                |row| row.get::<_, bool>(0),
-            )
-        })
-        .map_err(|error| AppError::Database(format!("查询疑似重复 Codex 会话用量失败: {error}")))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2461,77 +2331,6 @@ mod tests {
     }
 
     #[test]
-    fn test_matching_proxy_log_treats_legacy_null_data_source_as_proxy() -> Result<(), AppError> {
-        let conn = Connection::open_in_memory()?;
-        create_legacy_nullable_logs_table(&conn)?;
-        conn.execute(
-            "INSERT INTO proxy_request_logs (
-                request_id, app_type, model, input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens, status_code, created_at, data_source
-            ) VALUES ('legacy-proxy', 'codex', 'gpt-5.5', 10, 2, 1, 0, 200, 1000, NULL)",
-            [],
-        )?;
-
-        let key = DedupKey {
-            app_type: "codex",
-            model: "gpt-5.5",
-            input_tokens: 10,
-            output_tokens: 2,
-            cache_read_tokens: 1,
-            cache_creation_tokens: 0,
-            created_at: 1000,
-        };
-        assert!(has_matching_proxy_usage_log(&conn, &key)?);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_matching_proxy_log_matches_claude_desktop_for_claude_session() -> Result<(), AppError> {
-        let conn = Connection::open_in_memory()?;
-        create_legacy_nullable_logs_table(&conn)?;
-        conn.execute(
-            "INSERT INTO proxy_request_logs (
-                request_id, app_type, model, input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens, status_code, created_at, data_source
-            ) VALUES ('desktop-proxy', 'claude-desktop', 'claude-sonnet-4-5', 100, 20, 10, 5, 200, 1000, 'proxy')",
-            [],
-        )?;
-
-        let key = DedupKey {
-            app_type: "claude",
-            model: "claude-sonnet-4-5",
-            input_tokens: 100,
-            output_tokens: 20,
-            cache_read_tokens: 10,
-            cache_creation_tokens: 5,
-            created_at: 1060,
-        };
-        assert!(has_matching_proxy_usage_log(&conn, &key)?);
-
-        let mut outside_window = key;
-        outside_window.created_at = 1_601;
-        assert!(!has_matching_proxy_usage_log(&conn, &outside_window)?);
-
-        let mut different_model = key;
-        different_model.model = "claude-opus-4-5";
-        assert!(!has_matching_proxy_usage_log(&conn, &different_model)?);
-
-        let mut different_input = key;
-        different_input.input_tokens += 1;
-        assert!(!has_matching_proxy_usage_log(&conn, &different_input)?);
-
-        let mut different_cache_creation = key;
-        different_cache_creation.cache_creation_tokens += 1;
-        assert!(!has_matching_proxy_usage_log(
-            &conn,
-            &different_cache_creation
-        )?);
-
-        Ok(())
-    }
-
-    #[test]
     fn test_effective_filter_dedups_claude_session_against_desktop_proxy() -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         create_legacy_nullable_logs_table(&conn)?;
@@ -3878,6 +3677,58 @@ mod tests {
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].provider_id, "_opencode_session");
         assert_eq!(stats[0].provider_name, "OpenCode (Session)");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_provider_stats_labels_omp_and_antigravity_session_providers() -> Result<(), AppError>
+    {
+        let db = Database::memory()?;
+
+        {
+            let conn = lock_conn!(db.conn);
+            insert_usage_log(
+                &conn,
+                "omp-session",
+                "omp",
+                "_omp_session",
+                "gpt-5",
+                "omp_session",
+                1000,
+                100,
+                50,
+                0,
+                0,
+                200,
+                "0.01",
+            )?;
+            insert_usage_log(
+                &conn,
+                "agy-session",
+                "antigravity",
+                "_antigravity_session",
+                "gemini-3.8-flash",
+                "antigravity_session",
+                1000,
+                100,
+                50,
+                0,
+                0,
+                200,
+                "0.00",
+            )?;
+        }
+
+        let omp = db.get_provider_stats(None, None, Some("omp"), None, None)?;
+        assert_eq!(omp.len(), 1);
+        assert_eq!(omp[0].provider_id, "_omp_session");
+        assert_eq!(omp[0].provider_name, "Oh My Pi (Session)");
+
+        let agy = db.get_provider_stats(None, None, Some("antigravity"), None, None)?;
+        assert_eq!(agy.len(), 1);
+        assert_eq!(agy[0].provider_id, "_antigravity_session");
+        assert_eq!(agy[0].provider_name, "Antigravity (Session)");
 
         Ok(())
     }

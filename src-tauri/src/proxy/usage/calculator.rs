@@ -29,26 +29,6 @@ pub struct ModelPricing {
 pub struct CostCalculator;
 
 impl CostCalculator {
-    /// 计算请求成本
-    ///
-    /// # 参数
-    /// - `usage`: Token 使用量
-    /// - `pricing`: 模型定价
-    /// - `cost_multiplier`: 成本倍数 (provider 自定义)
-    ///
-    /// # 计算逻辑
-    /// - input_cost: input_tokens × 输入价格
-    /// - cache_read_cost: cache_read_tokens × 缓存读取价格
-    /// - Claude/Anthropic 的 input_tokens 已经不包含 cache_read_tokens
-    /// - total_cost: 各项成本之和 × 倍率（倍率只作用于最终总价）
-    pub fn calculate(
-        usage: &TokenUsage,
-        pricing: &ModelPricing,
-        cost_multiplier: Decimal,
-    ) -> CostBreakdown {
-        Self::calculate_with_cache_semantics(usage, pricing, cost_multiplier, false)
-    }
-
     /// 按 app_type 选择输入 token 语义后计算成本。
     ///
     /// Codex/OpenAI Responses 与 Gemini 的输入 token 字段包含 cache read 部分；
@@ -157,7 +137,7 @@ mod tests {
         let pricing = ModelPricing::from_strings("3.0", "15.0", "0.3", "3.75").unwrap();
         let multiplier = Decimal::from_str("1.0").unwrap();
 
-        let cost = CostCalculator::calculate(&usage, &pricing, multiplier);
+        let cost = CostCalculator::calculate_for_app("claude", &usage, &pricing, multiplier);
 
         // Claude/Anthropic 语义：input_tokens 已经不含 cache_read_tokens
         // input: 1000 * 3.0 / 1M = 0.003
@@ -235,7 +215,7 @@ mod tests {
         let pricing = ModelPricing::from_strings("3.0", "15.0", "0", "0").unwrap();
         let multiplier = Decimal::from_str("1.5").unwrap();
 
-        let cost = CostCalculator::calculate(&usage, &pricing, multiplier);
+        let cost = CostCalculator::calculate_for_app("claude", &usage, &pricing, multiplier);
 
         // input_cost: 基础价格（不含倍率）= 1000 * 3.0 / 1M = 0.003
         assert_eq!(cost.input_cost, Decimal::from_str("0.003").unwrap());
@@ -257,7 +237,7 @@ mod tests {
         let pricing = ModelPricing::from_strings("0.075", "0.3", "0.01875", "0.075").unwrap();
         let multiplier = Decimal::from_str("1.0").unwrap();
 
-        let cost = CostCalculator::calculate(&usage, &pricing, multiplier);
+        let cost = CostCalculator::calculate_for_app("claude", &usage, &pricing, multiplier);
 
         // 验证高精度计算
         assert!(cost.total_cost > Decimal::ZERO);

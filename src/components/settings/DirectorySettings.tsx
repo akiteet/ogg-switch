@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import type { ResolvedDirectories } from "@/hooks/useSettings";
 
-type DirectoryAppId = Exclude<AppId, "claude-desktop" | "omp">;
+type DirectoryAppId = Exclude<AppId, "claude-desktop" | "omp" | "antigravity">;
 
 interface DirectorySettingsProps {
   appConfigDir?: string;
@@ -87,9 +87,6 @@ export function DirectorySettings({
           </p>
         </header>
 
-
-
-
         <DirectoryInput
           label={t("settings.grokConfigDir")}
           description={undefined}
@@ -100,10 +97,6 @@ export function DirectorySettings({
           onBrowse={() => onBrowseDirectory("grokbuild")}
           onReset={() => onResetDirectory("grokbuild")}
         />
-
-
-
-
       </section>
     </div>
   );

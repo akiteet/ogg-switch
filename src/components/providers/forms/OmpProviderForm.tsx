@@ -126,11 +126,13 @@ export function OmpProviderForm({
   );
   const [headers, setHeaders] = useState<Record<string, string>>(
     initialConfig?.type === "api-key" || initialConfig?.type === "gateway"
-      ? initialConfig.headers ?? {}
+      ? (initialConfig.headers ?? {})
       : {},
   );
   const [authHeader, setAuthHeader] = useState(
-    initialConfig?.type === "api-key" ? (initialConfig.authHeader ?? true) : true,
+    initialConfig?.type === "api-key"
+      ? (initialConfig.authHeader ?? true)
+      : true,
   );
   const [models, setModels] = useState<OmpModelInfo[]>(
     initialConfig?.models ?? [],
@@ -168,9 +170,7 @@ export function OmpProviderForm({
           websiteUrl: preset.websiteUrl,
           settingsConfig: {},
           category:
-            preset.type === "oauth"
-              ? OMP_OAUTH_CATEGORY
-              : OMP_API_KEY_CATEGORY,
+            preset.type === "oauth" ? OMP_OAUTH_CATEGORY : OMP_API_KEY_CATEGORY,
           icon: preset.icon,
         } as AnyPreset,
       })),
@@ -201,8 +201,7 @@ export function OmpProviderForm({
   );
 
   const presetCategoryLabels = useMemo(
-    () =>
-      Object.fromEntries(presetGroups.map((g) => [g.category, g.label])),
+    () => Object.fromEntries(presetGroups.map((g) => [g.category, g.label])),
     [presetGroups],
   );
 
@@ -256,15 +255,16 @@ export function OmpProviderForm({
 
   const buildProviderConfig = (): OmpProviderConfig => {
     // id 保真是编辑语义的根基：编辑态必须沿用现有 id（否则保存会因键变化
-    // 追加新条目而非更新），只有新建态才从名称推导 / 兜底随机 id。
-    const id =
-      providerId ??
-      ((form.getValues("name") || "custom")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "") ||
-        crypto.randomUUID());
+    // 追加新条目而非更新），只有新建态才从名称推导。
+    // 该 id 同时是 models.yml 的 provider key（omp /model 与角色 selector
+    // 显示的就是它），因此纯中文等 slug 化为空的名称回落原始名称而不是
+    // UUID——否则 omp 里会显示一串不可读的随机 id（历史 bug）。
+    const rawName = (form.getValues("name") || "custom").trim();
+    const slug = rawName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    const id = providerId ?? (slug || rawName.replace(/\//g, "-") || "custom");
     const name = form.getValues("name");
     const websiteUrl = form.getValues("websiteUrl") ?? "";
     const description = form.getValues("notes") ?? "";
@@ -320,7 +320,10 @@ export function OmpProviderForm({
         roles: [],
       });
       if (errors.length > 0) {
-        toast.error(errors[0]?.message ?? t("providerForm.validationError", { defaultValue: "配置验证失败" }));
+        toast.error(
+          errors[0]?.message ??
+            t("providerForm.validationError", { defaultValue: "配置验证失败" }),
+        );
         return;
       }
       await ompApi.saveOmpProvider(providerConfig);
@@ -406,13 +409,18 @@ export function OmpProviderForm({
 
         {showButtons && (
           <div className="flex justify-end gap-3">
-            <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onCancel}
+              disabled={isSubmitting}
+            >
               {t("common.cancel", { defaultValue: "取消" })}
             </Button>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting
                 ? t("common.saving", { defaultValue: "保存中..." })
-                : submitLabel ?? t("common.save", { defaultValue: "保存" })}
+                : (submitLabel ?? t("common.save", { defaultValue: "保存" }))}
             </Button>
           </div>
         )}

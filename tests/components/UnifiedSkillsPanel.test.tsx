@@ -488,16 +488,13 @@ describe("UnifiedSkillsPanel", () => {
       renderPanel();
 
       const row = screen.getByText("Alpha Skill").closest(".group");
-      // claude 视图使用 IMPORT_SKILLS_APP_IDS（排除 Pi/omp），
-      // 行内 app 开关只有 Grok Build 一个
-      const appToggleButtons = ["Grok Build"].map((label) =>
-        within(row as HTMLElement).getByRole("button", { name: label }),
+      // Skills 面板始终展示受支持的三个应用。
+      const appToggleButtons = ["Grok Build", "Oh My Pi", "Antigravity"].map(
+        (label) =>
+          within(row as HTMLElement).getByRole("button", { name: label }),
       );
 
-      expect(appToggleButtons).toHaveLength(1);
-      expect(
-        within(row as HTMLElement).queryByRole("button", { name: "Oh My Pi" }),
-      ).not.toBeInTheDocument();
+      expect(appToggleButtons).toHaveLength(3);
       appToggleButtons.forEach((button) => expect(button).toBeDisabled());
       expect(screen.getByTitle("skills.uninstall")).toBeDisabled();
       await userEvent.setup().click(appToggleButtons[0]);

@@ -11,10 +11,7 @@ import { deepClone } from "@/utils/deepClone";
 type ProvidersByApp = Record<AppId, Record<string, Provider>>;
 type CurrentProviderState = Record<AppId, string>;
 type McpConfigState = Record<AppId, Record<string, McpServer>>;
-type LiveProviderIdsByApp = Record<
-  "opencode" | "openclaw" | "hermes",
-  string[]
->;
+type LiveProviderIdsByApp = Record<"opencode", string[]>;
 
 const createDefaultProviders = (): ProvidersByApp => ({
   claude: {
@@ -75,6 +72,7 @@ const createDefaultProviders = (): ProvidersByApp => ({
   hermes: {},
   pi: {},
   omp: {},
+  antigravity: {},
 });
 
 const createDefaultCurrent = (): CurrentProviderState => ({
@@ -88,15 +86,12 @@ const createDefaultCurrent = (): CurrentProviderState => ({
   hermes: "",
   pi: "",
   omp: "",
+  antigravity: "",
 });
 
 let providers = createDefaultProviders();
 let current = createDefaultCurrent();
-let liveProviderIds: LiveProviderIdsByApp = {
-  opencode: [],
-  openclaw: [],
-  hermes: [],
-};
+let liveProviderIds: LiveProviderIdsByApp = { opencode: [] };
 let settingsState: Settings = {
   showInTray: true,
   minimizeToTrayOnClose: true,
@@ -203,6 +198,7 @@ let mcpConfigs: McpConfigState = {
   hermes: {},
   pi: {},
   omp: {},
+  antigravity: {},
 };
 
 const cloneProviders = (value: ProvidersByApp) =>
@@ -211,11 +207,7 @@ const cloneProviders = (value: ProvidersByApp) =>
 export const resetProviderState = () => {
   providers = createDefaultProviders();
   current = createDefaultCurrent();
-  liveProviderIds = {
-    opencode: [],
-    openclaw: [],
-    hermes: [],
-  };
+  liveProviderIds = { opencode: [] };
   sessionsState = createDefaultSessions();
   sessionMessagesState = createDefaultSessionMessages();
   settingsState = {
@@ -274,6 +266,7 @@ export const resetProviderState = () => {
     hermes: {},
     pi: {},
     omp: {},
+    antigravity: {},
   };
 };
 
@@ -282,16 +275,9 @@ export const getProviders = (appType: AppId) =>
 
 export const getCurrentProviderId = (appType: AppId) => current[appType] ?? "";
 
-export const getLiveProviderIds = (
-  appType: "opencode" | "openclaw" | "hermes",
-) => [...liveProviderIds[appType]];
-
-export const setLiveProviderIds = (
-  appType: "opencode" | "openclaw" | "hermes",
-  ids: string[],
-) => {
-  liveProviderIds[appType] = [...ids];
-};
+export const getLiveProviderIds = (appType: "opencode") => [
+  ...liveProviderIds[appType],
+];
 
 export const setCurrentProviderId = (appType: AppId, providerId: string) => {
   current[appType] = providerId;

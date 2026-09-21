@@ -162,6 +162,12 @@ pub(crate) fn build_provider_from_request(
                 "OMP providers must be added from the OMP provider page (models.yml)".to_string(),
             ));
         }
+        AppType::Antigravity => {
+            return Err(AppError::InvalidInput(
+                "Antigravity providers must be added from the Antigravity provider page"
+                    .to_string(),
+            ));
+        }
     };
 
     // Build usage script configuration if provided

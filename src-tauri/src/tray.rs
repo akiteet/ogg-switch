@@ -530,12 +530,12 @@ pub fn handle_provider_tray_event(app: &tauri::AppHandle, event_id: &str) -> boo
         log::info!("切换到 Oh My Pi 默认供应商: {provider_id}");
         let app_handle = app.clone();
         let provider_id = provider_id.to_string();
-        tauri::async_runtime::spawn_blocking(move || {
-            match crate::commands::omp_set_default_provider(&provider_id) {
+        tauri::async_runtime::spawn_blocking(
+            move || match crate::commands::omp_set_default_provider(&provider_id) {
                 Ok(()) => refresh_tray_menu(&app_handle),
                 Err(e) => log::error!("切换 Oh My Pi 供应商失败: {e}"),
-            }
-        });
+            },
+        );
         return true;
     }
 
@@ -885,14 +885,12 @@ pub fn create_tray_menu(
                         snapshot.current_provider_id == *id,
                         None::<&str>,
                     )
-                    .map_err(|e| {
-                        AppError::Message(format!("创建 Oh My Pi 菜单项失败: {e}"))
-                    })?;
+                    .map_err(|e| AppError::Message(format!("创建 Oh My Pi 菜单项失败: {e}")))?;
                     submenu_builder = submenu_builder.item(&item);
                 }
-                let submenu = submenu_builder.build().map_err(|e| {
-                    AppError::Message(format!("构建 Oh My Pi 子菜单失败: {e}"))
-                })?;
+                let submenu = submenu_builder
+                    .build()
+                    .map_err(|e| AppError::Message(format!("构建 Oh My Pi 子菜单失败: {e}")))?;
                 menu_builder = menu_builder.item(&submenu).separator();
             }
             Ok(_) => {}

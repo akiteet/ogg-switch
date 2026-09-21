@@ -6,7 +6,6 @@ import { ProviderActions } from "@/components/providers/ProviderActions";
 function renderPiActions({
   isCurrent = false,
   isInConfig = false,
-  isRemovalProtected = false,
   isStateChangeProtected = false,
   isAutoFailoverEnabled = false,
   isInFailoverQueue = false,
@@ -14,12 +13,10 @@ function renderPiActions({
   onEdit = vi.fn(),
   onRemoveFromConfig = vi.fn(),
   onDelete = vi.fn(),
-  onSetAsDefault = vi.fn(),
   onToggleFailover,
 }: {
   isCurrent?: boolean;
   isInConfig?: boolean;
-  isRemovalProtected?: boolean;
   isStateChangeProtected?: boolean;
   isAutoFailoverEnabled?: boolean;
   isInFailoverQueue?: boolean;
@@ -27,7 +24,6 @@ function renderPiActions({
   onEdit?: ReturnType<typeof vi.fn>;
   onRemoveFromConfig?: ReturnType<typeof vi.fn>;
   onDelete?: ReturnType<typeof vi.fn>;
-  onSetAsDefault?: ReturnType<typeof vi.fn>;
   onToggleFailover?: ReturnType<typeof vi.fn>;
 }) {
   render(
@@ -35,20 +31,18 @@ function renderPiActions({
       appId="pi"
       isCurrent={isCurrent}
       isInConfig={isInConfig}
-      isRemovalProtected={isRemovalProtected}
       isStateChangeProtected={isStateChangeProtected}
       isAutoFailoverEnabled={isAutoFailoverEnabled}
       isInFailoverQueue={isInFailoverQueue}
       onToggleFailover={onToggleFailover}
       onSwitch={onSwitch}
       onRemoveFromConfig={onRemoveFromConfig}
-      onSetAsDefault={onSetAsDefault}
       onEdit={onEdit}
       onDuplicate={vi.fn()}
       onDelete={onDelete}
     />,
   );
-  return { onSwitch, onEdit, onRemoveFromConfig, onDelete, onSetAsDefault };
+  return { onSwitch, onEdit, onRemoveFromConfig, onDelete };
 }
 
 describe("ProviderActions Pi provider switching", () => {
@@ -73,25 +67,18 @@ describe("ProviderActions Pi provider switching", () => {
     await user.click(screen.getByRole("button", { name: "启用" }));
 
     expect(onSwitch).toHaveBeenCalledTimes(1);
-    expect(
-      screen.queryByRole("button", { name: "provider.setAsDefault" }),
-    ).not.toBeInTheDocument();
   });
 
   it("offers removal without a default-selection action", async () => {
     const user = userEvent.setup();
-    const { onRemoveFromConfig, onSetAsDefault, onSwitch } = renderPiActions({
+    const { onRemoveFromConfig, onSwitch } = renderPiActions({
       isInConfig: true,
     });
 
     await user.click(screen.getByRole("button", { name: "移除" }));
 
     expect(onRemoveFromConfig).toHaveBeenCalledTimes(1);
-    expect(onSetAsDefault).not.toHaveBeenCalled();
     expect(onSwitch).not.toHaveBeenCalled();
-    expect(
-      screen.queryByRole("button", { name: "设为默认" }),
-    ).not.toBeInTheDocument();
   });
 
   it("does not turn Pi's current selection into a UI state", () => {

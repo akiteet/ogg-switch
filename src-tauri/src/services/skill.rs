@@ -616,6 +616,11 @@ impl SkillService {
                     .join("agent")
                     .join("skills"));
             }
+            AppType::Antigravity => {
+                if let Some(custom) = crate::settings::get_antigravity_override_dir() {
+                    return Ok(custom.join("skills"));
+                }
+            }
         }
 
         // 默认路径：回退到用户主目录下的标准位置。
@@ -634,6 +639,9 @@ impl SkillService {
             AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
             AppType::Pi => crate::pi_config::get_pi_agent_dir()?.join("skills"),
             AppType::Omp => home.join(".omp").join("agent").join("skills"),
+            // agy 的 skills 目录（Google Cloud 文档路径 ~/.gemini/config/skills）；
+            // 前端 v1 不把 antigravity 接入 skills 同步，此臂仅为穷尽性兜底
+            AppType::Antigravity => home.join(".gemini").join("config").join("skills"),
         })
     }
 
@@ -709,6 +717,8 @@ impl SkillService {
             // Pi/omp 的 exists=active：启用状态直接来自原生目录，不落库
             skill.apps.pi = Self::skill_exists_in_app(&skill.directory, &AppType::Pi);
             skill.apps.omp = Self::skill_exists_in_app(&skill.directory, &AppType::Omp);
+            skill.apps.antigravity =
+                Self::skill_exists_in_app(&skill.directory, &AppType::Antigravity);
         }
         Ok(skills.into_values().collect())
     }
@@ -1374,6 +1384,7 @@ impl SkillService {
             .ok_or_else(|| anyhow!("Skill not found: {skill_id}"))?;
         skill.apps.pi = Self::skill_exists_in_app(&skill.directory, &AppType::Pi);
         skill.apps.omp = Self::skill_exists_in_app(&skill.directory, &AppType::Omp);
+        skill.apps.antigravity = Self::skill_exists_in_app(&skill.directory, &AppType::Antigravity);
 
         // 本函数后续三种危险操作都用 directory 拼路径：备份源（把任意目录复制进
         // 备份区并在界面列出）、remove_dir_all（删任意目录）、copy_dir_recursive
@@ -1468,6 +1479,8 @@ impl SkillService {
         Self::require_valid_directory(&current_skill.directory)?;
         current_skill.apps.pi = Self::skill_exists_in_app(&current_skill.directory, &AppType::Pi);
         current_skill.apps.omp = Self::skill_exists_in_app(&current_skill.directory, &AppType::Omp);
+        current_skill.apps.antigravity =
+            Self::skill_exists_in_app(&current_skill.directory, &AppType::Antigravity);
         let skill = current_skill;
 
         let dest = ssot_dir.join(&skill.directory);
@@ -1530,6 +1543,8 @@ impl SkillService {
         let mut updated_skill = Self::persist_updated_skill_metadata(db, &updated_metadata)?;
         updated_skill.apps.pi = Self::skill_exists_in_app(&updated_skill.directory, &AppType::Pi);
         updated_skill.apps.omp = Self::skill_exists_in_app(&updated_skill.directory, &AppType::Omp);
+        updated_skill.apps.antigravity =
+            Self::skill_exists_in_app(&updated_skill.directory, &AppType::Antigravity);
 
         // 同步到所有已启用的应用目录
         for app in updated_skill.apps.enabled_apps() {
@@ -1868,7 +1883,7 @@ impl SkillService {
 
         // Pi/omp follow their native exists=active rule; other apps keep their
         // established persisted desired-state flags.
-        if !matches!(app, AppType::Pi | AppType::Omp) {
+        if !matches!(app, AppType::Pi | AppType::Omp | AppType::Antigravity) {
             db.update_skill_apps(id, &skill.apps)?;
         }
 
@@ -2023,6 +2038,7 @@ impl SkillService {
             let mut apps = selection.apps;
             apps.pi = Self::skill_exists_in_app(&dir_name, &AppType::Pi);
             apps.omp = Self::skill_exists_in_app(&dir_name, &AppType::Omp);
+            apps.antigravity = Self::skill_exists_in_app(&dir_name, &AppType::Antigravity);
 
             // 从 lock 文件提取仓库信息
             let (id, repo_owner, repo_name, repo_branch, readme_url) =
@@ -2097,7 +2113,7 @@ impl SkillService {
     fn preflight_install_destination(source: &Path, directory: &str, app: &AppType) -> Result<()> {
         let ssot_dir = Self::get_ssot_dir()?;
         let app_dir = Self::get_distinct_app_skills_dir(&ssot_dir, app)?;
-        if !matches!(app, AppType::Pi | AppType::Omp) {
+        if !matches!(app, AppType::Pi | AppType::Omp | AppType::Antigravity) {
             return Ok(());
         }
         let destination = app_dir.join(directory);
@@ -2461,7 +2477,7 @@ impl SkillService {
         if skill_path.exists() || Self::is_symlink(&skill_path) {
             // omp 与 Pi 同为原生目录应用：删除前验证目标是 OGG Switch 部署的副本，
             // 避免误删用户自维护的同名 Skill
-            if matches!(app, AppType::Pi | AppType::Omp) {
+            if matches!(app, AppType::Pi | AppType::Omp | AppType::Antigravity) {
                 let source = ssot_dir.join(&directory);
                 Self::ensure_pi_skill_destination_matches(&source, &skill_path, &directory)?;
             }

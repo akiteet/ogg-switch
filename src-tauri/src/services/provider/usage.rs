@@ -128,6 +128,12 @@ pub async fn query_usage(
     app_type: AppType,
     provider_id: &str,
 ) -> Result<UsageResult, AppError> {
+    // omp 供应商不在 SQLite（models.yml + meta store 是真源），专道构造
+    if app_type == AppType::Omp {
+        let provider = crate::commands::find_omp_usage_provider(provider_id).await?;
+        return execute_saved_usage_script(&app_type, &provider).await;
+    }
+
     let (script_code, timeout, api_key, base_url, access_token, user_id, template_type) = {
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let provider = providers.get(provider_id).ok_or_else(|| {
@@ -188,6 +194,49 @@ pub async fn query_usage(
     .await
 }
 
+/// 从已构造的 Provider 读取保存的用量脚本并执行（omp 专道复用）。
+async fn execute_saved_usage_script(
+    app_type: &AppType,
+    provider: &crate::provider::Provider,
+) -> Result<UsageResult, AppError> {
+    let usage_script = provider
+        .meta
+        .as_ref()
+        .and_then(|m| m.usage_script.as_ref())
+        .ok_or_else(|| {
+            AppError::localized(
+                "provider.usage.script.missing",
+                "未配置用量查询脚本",
+                "Usage script is not configured",
+            )
+        })?;
+    if !usage_script.enabled {
+        return Err(AppError::localized(
+            "provider.usage.disabled",
+            "用量查询未启用",
+            "Usage query is disabled",
+        ));
+    }
+
+    let (api_key, base_url) = resolve_script_credentials(
+        app_type,
+        provider,
+        usage_script.api_key.as_deref(),
+        usage_script.base_url.as_deref(),
+    );
+
+    execute_and_format_usage_result(
+        &usage_script.code,
+        &api_key,
+        &base_url,
+        usage_script.timeout.unwrap_or(10),
+        usage_script.access_token.as_deref(),
+        usage_script.user_id.as_deref(),
+        usage_script.template_type.as_deref(),
+    )
+    .await
+}
+
 /// Test usage script (using temporary script content, not saved)
 #[allow(clippy::too_many_arguments)]
 pub async fn test_usage_script(
@@ -202,18 +251,23 @@ pub async fn test_usage_script(
     user_id: Option<&str>,
     template_type: Option<&str>,
 ) -> Result<UsageResult, AppError> {
-    let providers = state.db.get_all_providers(app_type.as_str())?;
-    let provider = providers.get(provider_id).ok_or_else(|| {
-        AppError::localized(
-            "provider.not_found",
-            format!("供应商不存在: {provider_id}"),
-            format!("Provider not found: {provider_id}"),
-        )
-    })?;
+    // omp 供应商不在 SQLite，专道构造（同 query_usage）
+    let provider = if app_type == AppType::Omp {
+        crate::commands::find_omp_usage_provider(provider_id).await?
+    } else {
+        let providers = state.db.get_all_providers(app_type.as_str())?;
+        providers.get(provider_id).cloned().ok_or_else(|| {
+            AppError::localized(
+                "provider.not_found",
+                format!("供应商不存在: {provider_id}"),
+                format!("Provider not found: {provider_id}"),
+            )
+        })?
+    };
 
     // Resolve like the real query so testing matches what a saved script does:
     // explicit values win, empty ones fall back to the provider config.
-    let (api_key, base_url) = resolve_script_credentials(&app_type, provider, api_key, base_url);
+    let (api_key, base_url) = resolve_script_credentials(&app_type, &provider, api_key, base_url);
 
     execute_and_format_usage_result(
         script_code,

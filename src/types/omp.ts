@@ -1,3 +1,4 @@
+import type { UsageScript } from "../types";
 /**
  * Oh My Pi (OMP) Type Definitions
  * Based on OMP v18+ configuration format
@@ -35,29 +36,29 @@ export type OmpApiProtocol =
  * Each role maps to a specific provider/model combination
  */
 export type OmpRole =
-  | "default"   // Default general-purpose model
-  | "smol"      // Fast, cheap model for simple tasks
-  | "slow"      // High-quality, slow model for complex tasks
-  | "plan"      // Planning and architecture tasks
-  | "commit"    // Git commit message generation
-  | "vision"    // Visual/image understanding
-  | "designer"  // Design-related tasks
-  | "task"      // Background task execution
-  | "advisor"   // Advisory/consulting tasks
-  | "tiny";     // Extremely lightweight model
+  | "default" // Default general-purpose model
+  | "smol" // Fast, cheap model for simple tasks
+  | "slow" // High-quality, slow model for complex tasks
+  | "plan" // Planning and architecture tasks
+  | "commit" // Git commit message generation
+  | "vision" // Visual/image understanding
+  | "designer" // Design-related tasks
+  | "task" // Background task execution
+  | "advisor" // Advisory/consulting tasks
+  | "tiny"; // Extremely lightweight model
 
 /**
  * Thinking level for extended thinking models
  */
 export type ThinkingLevel =
-  | "off"       // No thinking
-  | "minimal"   // Minimal thinking
-  | "low"       // Low thinking
-  | "medium"    // Medium thinking
-  | "high"      // High thinking
-  | "xhigh"     // Extra high thinking
-  | "max"       // Maximum thinking
-  | "auto";     // Automatic thinking level
+  | "off" // No thinking
+  | "minimal" // Minimal thinking
+  | "low" // Low thinking
+  | "medium" // Medium thinking
+  | "high" // High thinking
+  | "xhigh" // Extra high thinking
+  | "max" // Maximum thinking
+  | "auto"; // Automatic thinking level
 
 /**
  * Model role mapping configuration
@@ -66,8 +67,8 @@ export type ThinkingLevel =
  */
 export interface OmpModelRole {
   role: OmpRole;
-  providerId: string;           // "anthropic", "openai", etc.
-  modelId: string;              // "claude-3.7-sonnet", "gpt-4o", etc.
+  providerId: string; // "anthropic", "openai", etc.
+  modelId: string; // "claude-3.7-sonnet", "gpt-4o", etc.
   thinkingLevel?: ThinkingLevel; // Optional thinking level
 }
 
@@ -79,12 +80,12 @@ export interface OmpModelRole {
  * Model information (from models.yml)
  */
 export interface OmpModelInfo {
-  id: string;                   // Model ID
-  name: string;                 // Display name
-  api?: OmpApiProtocol;        // Per-model API override
-  reasoning?: boolean;          // Supports extended thinking/reasoning
-  contextWindow: number;        // Context window size
-  maxTokens: number;           // Maximum output tokens
+  id: string; // Model ID
+  name: string; // Display name
+  api?: OmpApiProtocol; // Per-model API override
+  reasoning?: boolean; // Supports extended thinking/reasoning
+  contextWindow: number; // Context window size
+  maxTokens: number; // Maximum output tokens
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -95,8 +96,8 @@ export interface OmpModelInfo {
  * Base provider configuration
  */
 interface OmpProviderBase {
-  id: string;                   // Provider ID (unique)
-  name: string;                 // Display name
+  id: string; // Provider ID (unique)
+  name: string; // Display name
   type: OmpProviderType;
   category: OmpProviderCategory;
   description?: string;
@@ -109,6 +110,8 @@ interface OmpProviderBase {
   // 库模式成员标记：true = 已在配置（显示「移除」）；false = 仅存于库（显示「添加」）。
   // 由后端 load 时按条目来源计算，不写 models.yml
   inConfig?: boolean;
+  // 用量查询脚本配置（真源在 OGG meta store，仅 GUI 传输层，不写 models.yml）
+  usage_script?: UsageScript | null;
 }
 
 /**
@@ -117,7 +120,7 @@ interface OmpProviderBase {
  */
 export interface OmpOAuthProvider extends OmpProviderBase {
   type: "oauth";
-  oauthProviderId: string;      // OMP auth-broker provider ID
+  oauthProviderId: string; // OMP auth-broker provider ID
   api: OmpApiProtocol;
   // OAuth login state (runtime)
   isLoggedIn?: boolean;
@@ -141,10 +144,10 @@ export interface OAuthAccount {
 export interface OmpApiKeyProvider extends OmpProviderBase {
   type: "api-key";
   baseUrl: string;
-  apiKey: string;               // Can be env var name or secret-get command
+  apiKey: string; // Can be env var name or secret-get command
   api: OmpApiProtocol;
   headers?: Record<string, string>;
-  authHeader?: boolean;         // Whether to send Authorization header
+  authHeader?: boolean; // Whether to send Authorization header
 }
 
 /**
@@ -163,8 +166,8 @@ export interface OmpGatewayProvider extends OmpProviderBase {
  */
 export interface OmpLocalProvider extends OmpProviderBase {
   type: "local";
-  baseUrl: string;              // e.g., "http://localhost:11434" for Ollama
-  api: "openai-completions";    // Local servers typically use OpenAI API
+  baseUrl: string; // e.g., "http://localhost:11434" for Ollama
+  api: "openai-completions"; // Local servers typically use OpenAI API
 }
 
 /**
@@ -198,7 +201,7 @@ export interface OmpProviderPreset {
   defaultBaseUrl?: string;
   defaultApi?: OmpApiProtocol;
   requiresApiKey?: boolean;
-  envKeyName?: string;          // e.g., "ANTHROPIC_API_KEY"
+  envKeyName?: string; // e.g., "ANTHROPIC_API_KEY"
   // Preset models (optional)
   defaultModels?: OmpModelInfo[];
 }
@@ -211,21 +214,24 @@ export interface OmpProviderPreset {
  * models.yml structure (OMP native format)
  */
 export interface OmpModelsYml {
-  providers: Record<string, {
-    baseUrl?: string;
-    apiKey?: string;
-    api?: OmpApiProtocol;
-    authHeader?: boolean;
-    headers?: Record<string, string>;
-    models?: OmpModelInfo[];
-  }>;
+  providers: Record<
+    string,
+    {
+      baseUrl?: string;
+      apiKey?: string;
+      api?: OmpApiProtocol;
+      authHeader?: boolean;
+      headers?: Record<string, string>;
+      models?: OmpModelInfo[];
+    }
+  >;
 }
 
 /**
  * config.yml structure (OMP native format)
  */
 export interface OmpConfigYml {
-  modelRoles?: Record<OmpRole, string>;  // role -> "provider/model:thinking"
+  modelRoles?: Record<OmpRole, string>; // role -> "provider/model:thinking"
   // ... other config fields
 }
 
@@ -285,7 +291,7 @@ export interface OmpOAuthStatus {
     username?: string;
     displayName?: string;
   };
-  expiresAt?: number;  // Unix timestamp
+  expiresAt?: number; // Unix timestamp
 }
 
 /**
