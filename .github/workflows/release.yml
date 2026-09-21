@@ -83,7 +83,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "OGG Switch ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseName: "OGG Switch ${{ github.event.inputs.tag || github.ref_name }} — Antigravity CLI, Grok Build & Oh My Pi"
           releaseBody: |
             Installers for Windows, macOS and Linux are attached below.
 
