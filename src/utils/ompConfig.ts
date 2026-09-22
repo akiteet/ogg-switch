@@ -23,17 +23,43 @@ import type {
 // Constants
 // ────────────────────────────────────────────────────────────────────────────
 
-export const OMP_ROLES: readonly OmpRole[] = [
+/**
+ * chat 区角色（默认路由到对话模型）
+ */
+export const OMP_CHAT_ROLES: readonly OmpRole[] = [
   "default",
   "smol",
   "slow",
+  "vision",
   "plan",
   "commit",
-  "vision",
-  "designer",
+  "tiny",
+  "memory",
   "task",
   "advisor",
-  "tiny",
+] as const;
+
+/**
+ * kind 区角色（按模型种类路由：图像 / 搜索 / 语音 / 评审）。
+ * 取值常指向 OMP 的合成供应商（`web/parallel`、`local/kokoro`）或非 chat 模型
+ * （`openai-codex/gpt-image-1`）。
+ */
+export const OMP_KIND_ROLES: readonly OmpRole[] = [
+  "image",
+  "web",
+  "speech",
+  "dictation",
+  "judge",
+] as const;
+
+/**
+ * OMP 内置角色全集（与 OMP `config/model-roles.ts` 的 MODEL_ROLES 对齐）。
+ * 注意这是「内置」集合，不是封闭集合：config.yml 里可以有自定义角色键
+ * （OMP 会把 cycleOrder / modelRoles / modelTags 里的新键并入已知角色）。
+ */
+export const OMP_ROLES: readonly OmpRole[] = [
+  ...OMP_CHAT_ROLES,
+  ...OMP_KIND_ROLES,
 ] as const;
 
 export const DEFAULT_OMP_CONFIG: OmpSwitchConfig = {
@@ -336,10 +362,12 @@ export function validateOmpConfig(
     for (const [index, roleMapping] of config.roles.entries()) {
       const prefix = `roles[${index}]`;
 
-      if (!roleMapping.role || !OMP_ROLES.includes(roleMapping.role)) {
+      // 角色名不校验是否属于内置集合：OMP 支持自定义角色键（cycleOrder /
+      // modelRoles / modelTags 里的新名字都会被并入），只要求非空且不重复。
+      if (!roleMapping.role) {
         errors.push({
           field: `${prefix}.role`,
-          message: `Invalid role: ${roleMapping.role}`,
+          message: "Role name is required",
         });
       } else if (assignedRoles.has(roleMapping.role)) {
         errors.push({
@@ -420,7 +448,7 @@ export function reconcileRoles(
  */
 export function getRoleAssignment(
   config: OmpSwitchConfig,
-  role: OmpRole,
+  role: string,
 ): OmpModelRole | undefined {
   return config.roles.find((r) => r.role === role);
 }
@@ -430,7 +458,7 @@ export function getRoleAssignment(
  */
 export function setRoleAssignment(
   config: OmpSwitchConfig,
-  role: OmpRole,
+  role: string,
   providerId: string,
   modelId: string,
   thinkingLevel?: ThinkingLevel,
@@ -462,7 +490,7 @@ export function setRoleAssignment(
  */
 export function removeRoleAssignment(
   config: OmpSwitchConfig,
-  role: OmpRole,
+  role: string,
 ): OmpSwitchConfig {
   return {
     ...config,

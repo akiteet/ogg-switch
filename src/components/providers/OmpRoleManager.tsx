@@ -1,23 +1,33 @@
 /**
  * OMP Role Manager
- * 
- * Manages OMP's 10 semantic model roles.
- * Each role maps to a specific provider/model combination with optional thinking level.
- * 
- * Roles:
- * - default: General-purpose model for most tasks
- * - smol: Fast, cheap model for simple tasks
- * - slow: High-quality, slow model for complex reasoning
- * - plan: Planning and architecture tasks
- * - commit: Git commit message generation
- * - vision: Visual/image understanding
- * - designer: Design-related tasks
- * - task: Background task execution
- * - advisor: Advisory/consulting tasks
- * - tiny: Extremely lightweight model
+ *
+ * 管理 OMP config.yml 的 modelRoles。角色集合与 OMP 18.x 内置表对齐
+ * （`config/model-roles.ts` 的 MODEL_ROLES）：
+ *
+ * chat 区（默认路由到对话模型）
+ * - default：通用模型
+ * - smol：快速便宜的模型
+ * - slow：高质量推理模型
+ * - vision：图像理解
+ * - plan：规划/架构
+ * - commit：Git 提交消息
+ * - tiny：极轻量任务
+ * - memory：记忆/历史压缩
+ * - task：子任务
+ * - advisor：咨询建议
+ *
+ * kind 区（按模型种类路由，取值常指向 OMP 的合成供应商 web / local）
+ * - image：图像生成
+ * - web：联网搜索
+ * - speech：语音合成（tts）
+ * - dictation：语音识别（stt）
+ * - judge：评审/判定
+ *
+ * config.yml 里还可能有自定义角色键（如已废弃的 designer），它们同样出现在
+ * 本列表里，不做过滤——否则用户看得见 OMP 里的角色却在 OGG 里改不了。
  */
 
-import { useState, useMemo, useEffect } from "react";
+import { Fragment, useState, useMemo, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -47,17 +57,23 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { 
-  Settings, 
-  Zap, 
-  Brain, 
-  Lightbulb, 
-  GitCommit, 
-  Eye, 
-  Paintbrush, 
-  Boxes, 
-  MessageCircle, 
+import {
+  Settings,
+  Zap,
+  Brain,
+  Lightbulb,
+  GitCommit,
+  Eye,
+  Database,
+  Boxes,
+  MessageCircle,
   Feather,
+  Image as ImageIcon,
+  Globe,
+  Volume2,
+  Mic,
+  Scale,
+  Layers,
   Edit,
   Trash2,
   Plus,
@@ -67,9 +83,10 @@ import type {
   OmpModelRole,
   OmpProviderConfig,
   OmpModelInfo,
+  OmpEnabledProvider,
   ThinkingLevel,
 } from "@/types/omp";
-import { OMP_ROLES } from "@/utils/ompConfig";
+import { OMP_CHAT_ROLES, OMP_KIND_ROLES } from "@/utils/ompConfig";
 import { ompApi } from "@/lib/api";
 
 interface OmpRoleManagerProps {
@@ -78,72 +95,141 @@ interface OmpRoleManagerProps {
   onRolesChange: (roles: OmpModelRole[]) => void;
 }
 
-// Role metadata
-const ROLE_META: Record<
-  OmpRole,
-  { icon: typeof Settings; label: string; description: string; color: string }
-> = {
+type RoleMeta = {
+  icon: typeof Settings;
+  label: string;
+  description: string;
+  color: string;
+  /**
+   * 该角色接受的模型 kind（OMP `model-roles.ts` 的 accepts 规则）。
+   * 空数组 = 不筛选。models.yml 来的模型没有 kind，按 chat 处理。
+   */
+  accepts: readonly string[];
+};
+
+// Role metadata（label 用 OMP 官方 name，便于与 OMP TUI 对照）
+const ROLE_META: Record<OmpRole, RoleMeta> = {
   default: {
     icon: Settings,
     label: "Default",
     description: "通用模型，适合大多数任务",
     color: "text-blue-600 dark:text-blue-400",
+    accepts: ["chat"],
   },
   smol: {
     icon: Zap,
-    label: "Smol",
+    label: "Smol (Fast)",
     description: "快速便宜的模型，适合简单任务",
     color: "text-green-600 dark:text-green-400",
+    accepts: ["chat"],
   },
   slow: {
     icon: Brain,
-    label: "Slow",
+    label: "Slow (Thinking)",
     description: "高质量推理模型，适合复杂任务",
     color: "text-purple-600 dark:text-purple-400",
-  },
-  plan: {
-    icon: Lightbulb,
-    label: "Plan",
-    description: "规划和架构设计专用",
-    color: "text-yellow-600 dark:text-yellow-400",
-  },
-  commit: {
-    icon: GitCommit,
-    label: "Commit",
-    description: "Git 提交消息生成",
-    color: "text-orange-600 dark:text-orange-400",
+    accepts: ["chat"],
   },
   vision: {
     icon: Eye,
     label: "Vision",
     description: "图像理解和视觉任务",
     color: "text-indigo-600 dark:text-indigo-400",
+    accepts: ["chat"],
   },
-  designer: {
-    icon: Paintbrush,
-    label: "Designer",
-    description: "设计相关任务",
-    color: "text-pink-600 dark:text-pink-400",
+  plan: {
+    icon: Lightbulb,
+    label: "Plan (Architect)",
+    description: "规划和架构设计专用",
+    color: "text-yellow-600 dark:text-yellow-400",
+    accepts: ["chat"],
+  },
+  commit: {
+    icon: GitCommit,
+    label: "Commit",
+    description: "Git 提交消息生成",
+    color: "text-orange-600 dark:text-orange-400",
+    accepts: ["chat"],
+  },
+  tiny: {
+    icon: Feather,
+    label: "Tiny",
+    description: "极轻量任务（可用 tiny 或 chat 模型）",
+    color: "text-gray-600 dark:text-gray-400",
+    accepts: ["chat", "tiny"],
+  },
+  memory: {
+    icon: Database,
+    label: "Memory",
+    description: "记忆与历史压缩等后台记忆任务",
+    color: "text-rose-600 dark:text-rose-400",
+    accepts: ["chat", "tiny"],
   },
   task: {
     icon: Boxes,
-    label: "Task",
-    description: "后台任务执行",
+    label: "Task (Subtask)",
+    description: "子任务执行",
     color: "text-cyan-600 dark:text-cyan-400",
+    accepts: ["chat"],
   },
   advisor: {
     icon: MessageCircle,
     label: "Advisor",
     description: "咨询和建议",
     color: "text-teal-600 dark:text-teal-400",
+    accepts: ["chat"],
   },
-  tiny: {
-    icon: Feather,
-    label: "Tiny",
-    description: "极轻量级模型",
-    color: "text-gray-600 dark:text-gray-400",
+  image: {
+    icon: ImageIcon,
+    label: "Image",
+    description: "图像生成（kind: image）",
+    color: "text-pink-600 dark:text-pink-400",
+    accepts: ["image"],
+  },
+  web: {
+    icon: Globe,
+    label: "Web",
+    description: "联网搜索后端（kind: search）",
+    color: "text-sky-600 dark:text-sky-400",
+    // OMP 的 acceptsWeb 是「search 或带 webSearch 标记的 chat 模型」，而 webSearch
+    // 标记在目录 JSON 里看不到；只列 search 才能保证选出来的值一定被 OMP 采纳。
+    accepts: ["search"],
+  },
+  speech: {
+    icon: Volume2,
+    label: "Speech",
+    description: "语音合成 TTS（kind: tts）",
+    color: "text-amber-600 dark:text-amber-400",
+    accepts: ["tts"],
+  },
+  dictation: {
+    icon: Mic,
+    label: "Dictation",
+    description: "语音识别 STT（kind: stt）",
+    color: "text-violet-600 dark:text-violet-400",
+    accepts: ["stt"],
+  },
+  judge: {
+    icon: Scale,
+    label: "Judge",
+    description: "评审/判定（kind: judge）",
+    color: "text-lime-600 dark:text-lime-400",
+    accepts: ["judge", "tiny", "chat"],
   },
 };
+
+/** 取角色元数据：内置角色用 ROLE_META，自定义角色用兜底条目。 */
+function roleMeta(role: string): RoleMeta {
+  const builtIn = (ROLE_META as Record<string, RoleMeta>)[role];
+  if (builtIn) return builtIn;
+  return {
+    icon: Layers,
+    label: role,
+    description: "自定义角色（config.yml 里的自定义 modelRoles 键）",
+    color: "text-muted-foreground",
+    accepts: [],
+  };
+}
 
 const THINKING_LEVELS: { value: ThinkingLevel; label: string }[] = [
   { value: "off", label: "Off" },
@@ -168,88 +254,141 @@ function providerRefId(provider: OmpProviderConfig): string {
     : provider.id;
 }
 
+/** models.yml 来的模型没有 kind，按 chat 处理（OGG 写入的条目都是对话模型） */
+function modelKind(model: OmpModelInfo): string {
+  return model.kind ?? "chat";
+}
+
 export function OmpRoleManager({
   providers,
   roles,
   onRolesChange,
 }: OmpRoleManagerProps) {
   const { t } = useTranslation();
-  const [editingRole, setEditingRole] = useState<OmpRole | null>(null);
+  const [editingRole, setEditingRole] = useState<string | null>(null);
+  /** 新建自定义角色：true 时弹窗多一个「角色名称」输入，保存时用它当角色键 */
+  const [creatingRole, setCreatingRole] = useState(false);
+  const [newRoleName, setNewRoleName] = useState("");
   const [editProviderId, setEditProviderId] = useState("");
   const [editModelId, setEditModelId] = useState("");
   const [editThinkingLevel, setEditThinkingLevel] = useState<ThinkingLevel | undefined>();
-  // OAuth 供应商不落 models.yml（合成条目 models 为空），弹窗内按需懒加载
-  const [fetchedModels, setFetchedModels] = useState<Record<string, OmpModelInfo[]>>({});
-  const [loadingModels, setLoadingModels] = useState(false);
+  // OMP 目录里已启用的供应商（web / local 等 models.yml 之外的条目）；
+  // 角色选择器必须能选到它们，否则 web/parallel、local/kokoro 这类取值无法配置。
+  const [enabledProviders, setEnabledProviders] = useState<OmpEnabledProvider[]>([]);
+  // 弹窗内按需从 OMP 目录取候选模型（key = `<providerRef>`），取不到时回落 models.yml 里的清单
+  const [catalogModels, setCatalogModels] = useState<Record<string, OmpModelInfo[]>>({});
 
-  // Build role map
+  useEffect(() => {
+    let cancelled = false;
+    ompApi
+      .ompListEnabledProviders()
+      .then((list) => {
+        if (!cancelled) setEnabledProviders(list);
+      })
+      .catch((error) => {
+        console.warn("[OmpRoleManager] list enabled providers failed:", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 角色行 = 内置 15 个 + 配置里出现的自定义角色（排序稳定，自定义在后）
+  const knownRoles = useMemo(() => {
+    const seen = new Set<string>(OMP_CHAT_ROLES);
+    for (const role of OMP_KIND_ROLES) seen.add(role);
+    const custom = roles
+      .map((r) => r.role)
+      .filter((role) => role && !seen.has(role))
+      .filter((role, index, all) => all.indexOf(role) === index)
+      .sort((a, b) => a.localeCompare(b));
+    return [
+      ...OMP_CHAT_ROLES.map((role) => role as string),
+      ...OMP_KIND_ROLES.map((role) => role as string),
+      ...custom,
+    ];
+  }, [roles]);
+
   const roleMap = useMemo(() => {
-    const map = new Map<OmpRole, OmpModelRole>();
+    const map = new Map<string, OmpModelRole>();
     for (const role of roles) {
       map.set(role.role, role);
     }
     return map;
   }, [roles]);
 
-  // 懒加载结果合并进供应商列表（仅填充 models 为空的条目）
-  const mergedProviders = useMemo(
-    () =>
-      providers.map((p) => {
-        const fetched = fetchedModels[p.id];
-        return fetched && fetched.length > 0 && p.models.length === 0
-          ? { ...p, models: fetched }
-          : p;
-      }),
-    [providers, fetchedModels],
-  );
+  // 供应商下拉项：OGG 的供应商 + OMP 目录里 OGG 不认识的（web / local / 未导入的 OAuth）
+  const providerOptions = useMemo(() => {
+    const rows = providers.map((provider) => ({
+      /** 下拉 value / 本地条目 id */
+      id: provider.id,
+      /** 写进 selector 的引用 id */
+      ref: providerRefId(provider),
+      label: `${provider.name} (${provider.models.length} models)`,
+    }));
+    const known = new Set(rows.map((row) => row.ref));
+    for (const enabled of enabledProviders) {
+      if (known.has(enabled.id)) continue;
+      known.add(enabled.id);
+      rows.push({
+        id: enabled.id,
+        ref: enabled.id,
+        label: `${enabled.id} · ${t("omp.roleManager.ompBuiltinProvider", {
+          defaultValue: "OMP 内置",
+        })} (${enabled.modelCount} models)`,
+      });
+    }
+    // 目录查询不可用（omp CLI 缺失 / models.yml 校验失败）时，已存在的角色分配
+    // 仍要能显示出来，否则下拉会空着而值其实还在
+    if (editProviderId && !rows.some((row) => row.id === editProviderId)) {
+      rows.push({
+        id: editProviderId,
+        ref: editProviderId,
+        label: `${editProviderId} · ${t("omp.roleManager.ompBuiltinProvider", {
+          defaultValue: "OMP 内置",
+        })}`,
+      });
+    }
+    return rows;
+  }, [providers, enabledProviders, editProviderId, t]);
 
-  // Get available models for a provider
-  const getProviderModels = (providerId: string) => {
-    const provider = mergedProviders.find((p) => p.id === providerId);
-    return provider?.models ?? [];
-  };
+  const refForProviderId = (providerId: string): string =>
+    providerOptions.find((option) => option.id === providerId)?.ref ?? providerId;
 
-  // 打开弹窗且所选供应商 models 为空时，从 omp 目录懒加载
-  //（OAuth 供应商凭据在 omp 凭据库，models.yml 不落模型清单）
+  /** 供应商在 models.yml 里已配置的模型（目录取不到时的回落） */
+  const configuredModels = (providerId: string): OmpModelInfo[] =>
+    providers.find((p) => p.id === providerId)?.models ?? [];
+
+  // 打开弹窗且所选供应商的目录候选尚未缓存时，从 OMP 目录懒加载（kind=all）。
+  // 目录只是**补充**：该供应商在 models.yml 里已配置的模型始终参与候选——
+  // models.yml 的条目没有 kind 字段（OMP 把它们一律当 chat），按 kind 过滤会把
+  // 用户给 Image / Speech 等角色配置的模型全部滤掉。
   useEffect(() => {
     if (!editingRole || !editProviderId) return;
-    const provider = mergedProviders.find((p) => p.id === editProviderId);
-    if (!provider || provider.models.length > 0) return;
-    if (fetchedModels[editProviderId] !== undefined) return;
+    const ref = refForProviderId(editProviderId);
+    if (!ref) return;
+    if (catalogModels[ref] !== undefined) return;
     let cancelled = false;
-    setLoadingModels(true);
     ompApi
-      .ompListModels(providerRefId(provider))
+      .ompListModels(ref, "all")
       .then((models) => {
-        if (cancelled) return;
-        setFetchedModels((prev) => ({ ...prev, [editProviderId]: models }));
-        // 拉到模型且尚未选中时自动选第一个
-        if (models.length > 0) {
-          setEditModelId((current) => current || models[0]!.id);
-        }
+        if (!cancelled) setCatalogModels((prev) => ({ ...prev, [ref]: models }));
       })
       .catch((err) => {
         console.warn("[OmpRoleManager] lazy model fetch failed:", err);
-        if (!cancelled) {
-          setFetchedModels((prev) => ({ ...prev, [editProviderId]: [] }));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingModels(false);
+        if (!cancelled) setCatalogModels((prev) => ({ ...prev, [ref]: [] }));
       });
     return () => {
       cancelled = true;
     };
-  }, [editingRole, editProviderId, mergedProviders, fetchedModels]);
+  }, [editingRole, editProviderId, catalogModels, providers, enabledProviders]);
 
-  const handleEditRole = (role: OmpRole) => {
+  const handleEditRole = (role: string) => {
     const existing = roleMap.get(role);
     if (existing) {
-      // 角色里存的是 omp 的引用 id，需映射回本地列表条目 id 才能正确回显
-      const localProvider = mergedProviders.find(
-        (p) => providerRefId(p) === existing.providerId,
-      );
-      setEditProviderId(localProvider?.id ?? existing.providerId);
+      // 角色里存的是 omp 的引用 id，需映射回下拉项 id 才能正确回显
+      const option = providerOptions.find((o) => o.ref === existing.providerId);
+      setEditProviderId(option?.id ?? existing.providerId);
       setEditModelId(existing.modelId);
       setEditThinkingLevel(existing.thinkingLevel);
     } else {
@@ -257,19 +396,57 @@ export function OmpRoleManager({
       setEditModelId("");
       setEditThinkingLevel(undefined);
     }
+    setCreatingRole(false);
+    setNewRoleName("");
     setEditingRole(role);
   };
 
+  const handleCreateRole = () => {
+    setEditProviderId("");
+    setEditModelId("");
+    setEditThinkingLevel(undefined);
+    setNewRoleName("");
+    setCreatingRole(true);
+    setEditingRole("__new__");
+  };
+
+  /** 新建自定义角色时以输入框里的名称为准（合法性与重复校验在此完成） */
+  const effectiveRole = creatingRole ? newRoleName.trim() : editingRole;
+
+  const acceptedKinds = useMemo<readonly string[]>(
+    () => (effectiveRole ? roleMeta(effectiveRole).accepts : []),
+    [effectiveRole],
+  );
+
+  const roleNameError = useMemo(() => {
+    if (!creatingRole) return null;
+    const name = newRoleName.trim();
+    if (!name) {
+      return t("omp.roleManager.roleNameRequired", {
+        defaultValue: "请输入角色名称",
+      });
+    }
+    if (/\s/.test(name)) {
+      return t("omp.roleManager.roleNameNoWhitespace", {
+        defaultValue: "角色名称不能包含空格",
+      });
+    }
+    if (roles.some((r) => r.role === name)) {
+      return t("omp.roleManager.roleNameDuplicate", {
+        defaultValue: "该角色已存在",
+      });
+    }
+    return null;
+  }, [creatingRole, newRoleName, roles, t]);
+
   const handleSaveRole = async () => {
-    if (!editingRole || !editProviderId || !editModelId) return;
+    if (roleNameError) return;
+    if (!effectiveRole || !editProviderId || !editModelId) return;
 
     // 落盘用 omp 的引用 id（OAuth 供应商必须是凭据库 id，否则 omp 认不出该角色）
-    const selectedProvider = mergedProviders.find((p) => p.id === editProviderId);
     const newRole: OmpModelRole = {
-      role: editingRole,
-      providerId: selectedProvider
-        ? providerRefId(selectedProvider)
-        : editProviderId,
+      role: effectiveRole,
+      providerId: refForProviderId(editProviderId),
       modelId: editModelId,
       thinkingLevel: editThinkingLevel,
     };
@@ -279,15 +456,15 @@ export function OmpRoleManager({
       await ompApi.setOmpRole(newRole);
 
       // Update local state
-      const newRoles = roles.filter((r) => r.role !== editingRole);
+      const newRoles = roles.filter((r) => r.role !== effectiveRole);
       newRoles.push(newRole);
       onRolesChange(newRoles);
       setEditingRole(null);
 
       toast.success(
         t("omp.roleManager.saveSuccess", {
-          role: ROLE_META[editingRole].label,
-          defaultValue: `角色 ${ROLE_META[editingRole].label} 保存成功`,
+          role: roleMeta(effectiveRole).label,
+          defaultValue: `角色 ${roleMeta(effectiveRole).label} 保存成功`,
         }),
       );
     } catch (error) {
@@ -300,7 +477,7 @@ export function OmpRoleManager({
     }
   };
 
-  const handleDeleteRole = async (role: OmpRole) => {
+  const handleDeleteRole = async (role: string) => {
     try {
       // Delete from backend via OMP API
       await ompApi.deleteOmpRole(role);
@@ -311,8 +488,8 @@ export function OmpRoleManager({
 
       toast.success(
         t("omp.roleManager.deleteSuccess", {
-          role: ROLE_META[role].label,
-          defaultValue: `角色 ${ROLE_META[role].label} 已删除`,
+          role: roleMeta(role).label,
+          defaultValue: `角色 ${roleMeta(role).label} 已删除`,
         }),
       );
     } catch (error) {
@@ -327,23 +504,95 @@ export function OmpRoleManager({
 
   const handleProviderChange = (providerId: string) => {
     setEditProviderId(providerId);
-    // Reset model selection when provider changes
-    const models = getProviderModels(providerId);
-    if (models.length > 0) {
-      setEditModelId(models[0].id);
-    } else {
-      setEditModelId("");
-    }
+    // Reset model selection when provider changes（候选由懒加载 effect 填充）
+    setEditModelId("");
   };
 
+  // 候选模型 = 该供应商已配置的模型 ∪ OMP 目录条目，**统一**按角色接受的 kind 过滤。
+  //
+  // 为什么已配置的模型也要过滤：OMP 只在「该角色的候选池」里解析角色取值
+  // （roleCandidatePool = 可用模型 ∩ accepts），而 models.yml 条目没有 kind 字段、
+  // 一律被当成 chat。把中转站的 chat 模型挂到 image / speech / dictation / web 上，
+  // 值会写进 config.yml 但 OMP 不会采纳（回落到自动选择）——列出来只会误导。
+  // chat 系角色不受影响：models.yml 条目 kind 缺省即 chat，本来就在 accepts 内。
+  const configuredForProvider = editProviderId
+    ? configuredModels(editProviderId)
+    : [];
   const selectedProviderModels = useMemo(() => {
     if (!editProviderId) return [];
-    return getProviderModels(editProviderId);
-  }, [editProviderId, mergedProviders]);
+    const configured = configuredModels(editProviderId);
+    const configuredIds = new Set(configured.map((m) => m.id));
+    const catalog = catalogModels[refForProviderId(editProviderId)] ?? [];
+    const merged = [
+      ...configured,
+      ...catalog.filter((m) => !configuredIds.has(m.id)),
+    ];
+    if (acceptedKinds.length === 0) return merged;
+    return merged.filter((m) => acceptedKinds.includes(modelKind(m)));
+  }, [editProviderId, catalogModels, acceptedKinds, providers]);
+
+  // 供应商自己配了模型、但因为 kind 不匹配被全部滤掉：给一句原因，而不是让用户
+  // 以为「我明明配了模型，界面却不认」
+  const hiddenByKind = useMemo(() => {
+    if (acceptedKinds.length === 0 || configuredForProvider.length === 0) {
+      return 0;
+    }
+    return configuredForProvider.filter(
+      (m) => !acceptedKinds.includes(modelKind(m)),
+    ).length;
+  }, [configuredForProvider, acceptedKinds]);
+
+  // 目录是否还查过：直接由缓存判定，不用独立的 loading 布尔——请求落地会触发
+  // 重渲染 → effect 清理把 cancelled 置真，若用 setLoading(false) 有概率被吞掉，
+  // 空候选时会永远停在骨架屏
+  const loadingModels =
+    Boolean(editProviderId) &&
+    catalogModels[refForProviderId(editProviderId)] === undefined;
 
   const selectedModel = useMemo(() => {
     return selectedProviderModels.find((m) => m.id === editModelId);
   }, [selectedProviderModels, editModelId]);
+
+  // 表格分组：chat / kind / 自定义（自定义组的行也可能落在 chat 或 kind 的语义里，
+  // 但角色名不是内置的，单独成组更清楚）
+  const roleGroups = useMemo(() => {
+    const builtIn = new Set<string>([...OMP_CHAT_ROLES, ...OMP_KIND_ROLES]);
+    const custom = knownRoles.filter((role) => !builtIn.has(role));
+    return [
+      {
+        key: "chat",
+        label: t("omp.roleManager.groupChat", { defaultValue: "对话角色" }),
+        hint: t("omp.roleManager.groupChatHint", {
+          defaultValue: "默认路由到对话模型",
+        }),
+        roles: OMP_CHAT_ROLES.map((role) => role as string),
+      },
+      {
+        key: "kind",
+        label: t("omp.roleManager.groupKind", {
+          defaultValue: "种类角色（kind）",
+        }),
+        hint: t("omp.roleManager.groupKindHint", {
+          defaultValue: "图像生成 / 联网搜索 / 语音合成 / 语音识别 / 评审",
+        }),
+        roles: OMP_KIND_ROLES.map((role) => role as string),
+      },
+      ...(custom.length > 0
+        ? [
+            {
+              key: "custom",
+              label: t("omp.roleManager.groupCustom", {
+                defaultValue: "自定义角色",
+              }),
+              hint: t("omp.roleManager.groupCustomHint", {
+                defaultValue: "config.yml 里的自定义 modelRoles 键",
+              }),
+              roles: custom,
+            },
+          ]
+        : []),
+    ];
+  }, [knownRoles, t]);
 
   return (
     <div className="space-y-4">
@@ -355,13 +604,21 @@ export function OmpRoleManager({
           </h3>
           <p className="text-sm text-muted-foreground">
             {t("omp.roleManager.description", {
-              defaultValue: "为 10 个语义角色分配模型",
+              count: knownRoles.length,
+              defaultValue: "为 {{count}} 个角色分配模型（内置角色 + 自定义角色）",
             })}
           </p>
         </div>
-        <Badge variant="secondary">
-          {roles.length} / {OMP_ROLES.length} {t("omp.roleManager.configured", { defaultValue: "已配置" })}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary">
+            {roles.length} / {knownRoles.length}{" "}
+            {t("omp.roleManager.configured", { defaultValue: "已配置" })}
+          </Badge>
+          <Button type="button" size="sm" variant="outline" onClick={handleCreateRole}>
+            <Plus className="mr-1 h-3.5 w-3.5" />
+            {t("omp.roleManager.addCustomRole", { defaultValue: "添加自定义角色" })}
+          </Button>
+        </div>
       </div>
 
       {/* Roles Table */}
@@ -381,65 +638,78 @@ export function OmpRoleManager({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {OMP_ROLES.map((role) => {
-              const assignment = roleMap.get(role);
-              const meta = ROLE_META[role];
-              const Icon = meta.icon;
-
-              return (
-                <TableRow key={role}>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Icon className={`h-4 w-4 ${meta.color}`} />
-                      <div>
-                        <div className="font-medium">{meta.label}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {meta.description}
-                        </div>
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {assignment ? (
-                      <div className="flex items-center gap-2">
-                        <code className="text-xs bg-muted px-2 py-1 rounded">
-                          {assignment.providerId}/{assignment.modelId}
-                          {assignment.thinkingLevel && `:${assignment.thinkingLevel}`}
-                        </code>
-                      </div>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">
-                        {t("omp.roleManager.notAssigned", { defaultValue: "未分配" })}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleEditRole(role)}
-                      >
-                        {assignment ? (
-                          <Edit className="h-4 w-4" />
-                        ) : (
-                          <Plus className="h-4 w-4" />
-                        )}
-                      </Button>
-                      {assignment && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteRole(role)}
-                        >
-                          <Trash2 className="h-4 w-4 text-red-500" />
-                        </Button>
-                      )}
-                    </div>
+            {roleGroups.map((group) => (
+              <Fragment key={`group-${group.key}`}>
+                <TableRow className="hover:bg-transparent">
+                  <TableCell
+                    colSpan={3}
+                    className="bg-muted/40 py-1.5 text-xs font-medium text-muted-foreground"
+                  >
+                    {group.label}
+                    <span className="ml-1 font-normal">· {group.hint}</span>
                   </TableCell>
                 </TableRow>
-              );
-            })}
+                {group.roles.map((role) => {
+                  const assignment = roleMap.get(role);
+                  const meta = roleMeta(role);
+                  const Icon = meta.icon;
+
+                  return (
+                    <TableRow key={role}>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Icon className={`h-4 w-4 ${meta.color}`} />
+                          <div>
+                            <div className="font-medium">{meta.label}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {meta.description}
+                            </div>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {assignment ? (
+                          <div className="flex items-center gap-2">
+                            <code className="text-xs bg-muted px-2 py-1 rounded">
+                              {assignment.providerId}/{assignment.modelId}
+                              {assignment.thinkingLevel && `:${assignment.thinkingLevel}`}
+                            </code>
+                          </div>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">
+                            {t("omp.roleManager.notAssigned", { defaultValue: "未分配" })}
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEditRole(role)}
+                          >
+                            {assignment ? (
+                              <Edit className="h-4 w-4" />
+                            ) : (
+                              <Plus className="h-4 w-4" />
+                            )}
+                          </Button>
+                          {assignment && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteRole(role)}
+                            >
+                              <Trash2 className="h-4 w-4 text-red-500" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </Fragment>
+            ))}
           </TableBody>
         </Table>
       </div>
@@ -454,25 +724,50 @@ export function OmpRoleManager({
               {editingRole && (
                 <div className="flex items-center gap-2">
                   {(() => {
-                    const meta = ROLE_META[editingRole];
+                    const meta = roleMeta(effectiveRole ?? editingRole);
                     const Icon = meta.icon;
                     return <Icon className={`h-5 w-5 ${meta.color}`} />;
                   })()}
                   {t("omp.roleManager.editRole", {
-                    role: editingRole && ROLE_META[editingRole].label,
-                    defaultValue: `配置 ${editingRole && ROLE_META[editingRole].label} 角色`,
+                    role: roleMeta(effectiveRole ?? editingRole).label,
+                    defaultValue: `配置 ${roleMeta(effectiveRole ?? editingRole).label} 角色`,
                   })}
                 </div>
               )}
             </DialogTitle>
             <DialogDescription>
-              {editingRole && ROLE_META[editingRole].description}
+              {editingRole && roleMeta(effectiveRole ?? editingRole).description}
             </DialogDescription>
           </DialogHeader>
 
           {/* 中部可滚动：弹窗为固定高度(flex) + max-h-[90vh]，内容超高时
               必须由这一层滚动，否则溢出部分会被居中定位裁掉（顶部被窗口边缘切掉） */}
           <div className="space-y-4 px-6 py-4 flex-1 min-h-0 overflow-y-auto">
+            {/* Role Name（仅新建自定义角色时显示；OMP 对角色键只要求非空，任意名字合法） */}
+            {creatingRole && (
+              <div className="space-y-2">
+                <Label>{t("omp.roleManager.roleName", { defaultValue: "角色名称" })}</Label>
+                <Input
+                  value={newRoleName}
+                  onChange={(e) => setNewRoleName(e.target.value)}
+                  placeholder={t("omp.roleManager.roleNamePlaceholder", {
+                    defaultValue: "例如 reviewer、writer",
+                  })}
+                  autoFocus
+                />
+                {roleNameError ? (
+                  <p className="text-xs text-destructive">{roleNameError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("omp.roleManager.roleNameHint", {
+                      defaultValue:
+                        "保存后写入 config.yml 的 modelRoles，可与内置角色一样分配模型",
+                    })}
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Provider Selection */}
             <div className="space-y-2">
               <Label>{t("omp.roleManager.provider", { defaultValue: "Provider" })}</Label>
@@ -481,9 +776,9 @@ export function OmpRoleManager({
                   <SelectValue placeholder={t("omp.roleManager.selectProvider", { defaultValue: "选择 Provider" })} />
                 </SelectTrigger>
                 <SelectContent>
-                  {mergedProviders.map((provider) => (
-                    <SelectItem key={provider.id} value={provider.id}>
-                      {provider.name} ({provider.models.length} models)
+                  {providerOptions.map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -503,6 +798,11 @@ export function OmpRoleManager({
                       {selectedProviderModels.map((model) => (
                         <SelectItem key={model.id} value={model.id}>
                           {model.name}
+                          {model.kind && model.kind !== "chat" && (
+                            <Badge variant="secondary" className="ml-2 text-xs">
+                              {model.kind}
+                            </Badge>
+                          )}
                           {model.reasoning && (
                             <Badge variant="secondary" className="ml-2 text-xs">
                               Reasoning
@@ -515,9 +815,9 @@ export function OmpRoleManager({
                 ) : loadingModels ? (
                   <div className="h-9 rounded-md border border-input bg-muted/30" />
                 ) : (
-                  /* OAuth 供应商的模型由 omp 从上游动态发现、不在静态目录里
-                     （omp_list_models 过滤结果为空），提供手动输入兜底——
-                     omp 角色选择器本就支持直接引用上游模型 id */
+                  /* models.yml 与目录都拿不到候选（OAuth 供应商的模型由 omp 从上游
+                     动态发现）时提供手动输入兜底——omp 角色选择器本就支持直接引用
+                     上游模型 id */
                   <Input
                     value={editModelId}
                     onChange={(e) => setEditModelId(e.target.value.trim())}
@@ -526,19 +826,29 @@ export function OmpRoleManager({
                     })}
                   />
                 )}
-                {loadingModels ? (
+                {/* 目录还在取时只提示进度，不阻塞已给出的候选 */}
+                {loadingModels && selectedProviderModels.length > 0 && (
                   <p className="text-xs text-muted-foreground">
                     {t("omp.roleManager.loadingModels", { defaultValue: "正在从 OMP 获取模型…" })}
                   </p>
-                ) : (
-                  selectedProviderModels.length === 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      {t("omp.roleManager.manualModelHint", {
-                        defaultValue:
-                          "该供应商的模型清单无法从 omp 获取，直接输入模型 ID 即可（角色将保存为 provider/model）",
-                      })}
-                    </p>
-                  )
+                )}
+                {!loadingModels && hiddenByKind > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("omp.roleManager.kindFilteredHint", {
+                      kinds: acceptedKinds.join(" / "),
+                      count: hiddenByKind,
+                      defaultValue:
+                        "该角色只接受 OMP 目录里 kind = {{kinds}} 的模型，已隐藏该供应商的 {{count}} 个自建模型（models.yml 条目在 OMP 眼里都是 chat，分配过去不会被采纳）",
+                    })}
+                  </p>
+                )}
+                {!loadingModels && selectedProviderModels.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("omp.roleManager.manualModelHint", {
+                      defaultValue:
+                        "该供应商没有该角色可用的模型，直接输入模型 ID 即可（角色将保存为 provider/model）",
+                    })}
+                  </p>
                 )}
               </div>
             )}
@@ -577,7 +887,7 @@ export function OmpRoleManager({
                   {t("omp.roleManager.preview", { defaultValue: "预览" })}
                 </div>
                 <code className="text-xs">
-                  {editProviderId}/{editModelId}
+                  {refForProviderId(editProviderId)}/{editModelId}
                   {editThinkingLevel && `:${editThinkingLevel}`}
                 </code>
               </div>
@@ -590,7 +900,7 @@ export function OmpRoleManager({
             </Button>
             <Button
               onClick={handleSaveRole}
-              disabled={!editProviderId || !editModelId}
+              disabled={!effectiveRole || !editProviderId || !editModelId || !!roleNameError}
             >
               {t("common.save", { defaultValue: "保存" })}
             </Button>

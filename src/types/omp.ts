@@ -28,24 +28,34 @@ export type OmpApiProtocol =
   | "google-generative-ai";
 
 // ────────────────────────────────────────────────────────────────────────────
-// Model Roles (10 fixed semantic roles)
+// Model Roles
+//
+// 与 OMP 18.x 内置角色表（`config/model-roles.ts` 的 MODEL_ROLES）一致：
+// chat 区 10 个 + kind 区 5 个。角色名不是封闭集合——config.yml 里出现的自定义键
+// （如已废弃的 designer）也是合法角色，因此运行时用的是任意字符串。
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * OMP's 10 managed model roles
- * Each role maps to a specific provider/model combination
+ * OMP 内置角色 id
  */
 export type OmpRole =
-  | "default" // Default general-purpose model
-  | "smol" // Fast, cheap model for simple tasks
-  | "slow" // High-quality, slow model for complex tasks
-  | "plan" // Planning and architecture tasks
-  | "commit" // Git commit message generation
-  | "vision" // Visual/image understanding
-  | "designer" // Design-related tasks
-  | "task" // Background task execution
-  | "advisor" // Advisory/consulting tasks
-  | "tiny"; // Extremely lightweight model
+  // chat 区
+  | "default" // 通用模型
+  | "smol" // 快速便宜的模型（Fast）
+  | "slow" // 高质量推理模型（Thinking）
+  | "vision" // 图像理解
+  | "plan" // 规划/架构（Architect）
+  | "commit" // Git 提交消息生成
+  | "tiny" // 极轻量任务
+  | "memory" // 记忆/历史压缩
+  | "task" // 子任务（Subtask）
+  | "advisor" // 咨询建议
+  // kind 区（按模型种类路由）
+  | "image" // 图像生成
+  | "web" // 联网搜索
+  | "speech" // 语音合成（tts）
+  | "dictation" // 语音识别（stt）
+  | "judge"; // 评审/判定
 
 /**
  * Thinking level for extended thinking models
@@ -66,9 +76,10 @@ export type ThinkingLevel =
  * Example: "anthropic/claude-3.7-sonnet:high"
  */
 export interface OmpModelRole {
-  role: OmpRole;
-  providerId: string; // "anthropic", "openai", etc.
-  modelId: string; // "claude-3.7-sonnet", "gpt-4o", etc.
+  /** 角色名：内置 id 或 config.yml 里的自定义键 */
+  role: string;
+  providerId: string; // "anthropic", "openai", "web", "local" …
+  modelId: string; // "claude-3.7-sonnet", "gpt-4o", "parallel", "kokoro" …
   thinkingLevel?: ThinkingLevel; // Optional thinking level
 }
 
@@ -86,6 +97,11 @@ export interface OmpModelInfo {
   reasoning?: boolean; // Supports extended thinking/reasoning
   contextWindow: number; // Context window size
   maxTokens: number; // Maximum output tokens
+  /**
+   * OMP 目录里的模型种类（chat / tiny / image / tts / stt / search / judge /
+   * embedding / rerank）。仅 `omp models --json` 会带回；models.yml 不存该字段。
+   */
+  kind?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -167,7 +183,11 @@ export interface OmpGatewayProvider extends OmpProviderBase {
 export interface OmpLocalProvider extends OmpProviderBase {
   type: "local";
   baseUrl: string; // e.g., "http://localhost:11434" for Ollama
-  api: "openai-completions"; // Local servers typically use OpenAI API
+  api: OmpApiProtocol;
+  // models.yml 允许本地条目也带 headers / authHeader（部分本地服务需要自定义头），
+  // 编辑保存时必须原样带回，否则等于静默清空用户配置。
+  headers?: Record<string, string>;
+  authHeader?: boolean;
 }
 
 /**
@@ -231,7 +251,7 @@ export interface OmpModelsYml {
  * config.yml structure (OMP native format)
  */
 export interface OmpConfigYml {
-  modelRoles?: Record<OmpRole, string>; // role -> "provider/model:thinking"
+  modelRoles?: Record<string, string>; // role -> "provider/model:thinking"
   // ... other config fields
 }
 
@@ -306,4 +326,14 @@ export interface OmpLiveStatus {
   configPath?: string;
   cliAvailable: boolean;
   message: string;
+}
+
+/**
+ * OMP 目录里「已启用」的供应商（`omp models --json --kind all` 的去重结果）。
+ * 含 models.yml 之外的合成供应商：`web`（联网搜索后端池）、`local`（本机 tts/stt）、
+ * 以及各类 OAuth 供应商——角色选择器需要它们。
+ */
+export interface OmpEnabledProvider {
+  id: string;
+  modelCount: number;
 }

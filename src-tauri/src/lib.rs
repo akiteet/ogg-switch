@@ -1640,6 +1640,7 @@ pub fn run() {
             // OMP commands
             commands::read_omp_config,
             commands::save_omp_provider,
+            commands::save_omp_provider_to_library,
             commands::delete_omp_provider,
             commands::remove_omp_provider_from_live,
             commands::set_omp_providers_order,
@@ -1649,6 +1650,7 @@ pub fn run() {
             commands::omp_auth_login,
             commands::omp_auth_logout,
             commands::omp_list_models,
+            commands::omp_list_enabled_providers,
             commands::omp_fetch_upstream_models,
             commands::get_omp_quota_windows,
             // Workspace files (OpenClaw)

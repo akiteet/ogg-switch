@@ -2,6 +2,7 @@ import { http, HttpResponse } from "msw";
 import type { AppId } from "@/lib/api/types";
 import { MODELS_DEV_API_URL } from "@/lib/modelsDevPricing";
 import type { McpServer, Provider, Settings } from "@/types";
+import type { OmpProviderConfig } from "@/types/omp";
 import {
   addProvider,
   deleteProvider,
@@ -24,6 +25,9 @@ import {
   setMcpServerEnabled,
   upsertMcpServer,
   deleteMcpServer,
+  getOmpConfig,
+  saveOmpProviderToLibrary,
+  recordOmpLiveSave,
 } from "./state";
 
 const TAURI_ENDPOINT = "http://tauri.local";
@@ -70,6 +74,26 @@ export const handlers = [
   ),
 
   http.post(`${TAURI_ENDPOINT}/update_tray_menu`, () => success(true)),
+
+  // ── Oh My Pi（真源 ~/.omp/agent，独立于 SQLite 供应商表） ──────────────
+  http.post(`${TAURI_ENDPOINT}/read_omp_config`, () => success(getOmpConfig())),
+
+  http.post(`${TAURI_ENDPOINT}/save_omp_provider`, async ({ request }) => {
+    const { provider } = await withJson<{ provider: OmpProviderConfig }>(request);
+    recordOmpLiveSave(provider);
+    return success(null);
+  }),
+
+  http.post(
+    `${TAURI_ENDPOINT}/save_omp_provider_to_library`,
+    async ({ request }) => {
+      const { provider } = await withJson<{ provider: OmpProviderConfig }>(
+        request,
+      );
+      saveOmpProviderToLibrary(provider);
+      return success(null);
+    },
+  ),
 
   http.post(`${TAURI_ENDPOINT}/get_opencode_live_provider_ids`, () =>
     success(getLiveProviderIds("opencode")),

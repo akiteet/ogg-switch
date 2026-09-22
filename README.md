@@ -30,10 +30,13 @@ and no cloud dependency. Your keys and configuration never leave your machine.
   policies, so the OAuth/API-key split is always accurate
 
 **Semantic role orchestration for Oh My Pi**
-- Ten purpose-built roles — `default`, `smol`, `slow`, `plan`, `commit`, `vision`,
-  `designer`, `task`, `advisor`, `tiny` — each mapped to a provider/model pair with
-  optional reasoning depth
-- Role edits are validated against the live catalog and written back atomically
+- All fifteen built-in roles — the ten chat roles (`default`, `smol`, `slow`, `vision`,
+  `plan`, `commit`, `tiny`, `memory`, `task`, `advisor`) plus the five kind roles
+  (`image`, `web`, `speech`, `dictation`, `judge`) — each mapped to a provider/model
+  pair with optional reasoning depth. Custom `modelRoles` keys in `config.yml` are
+  listed too, so nothing configured in OMP stays hidden from the UI
+- Role candidates come from OMP's own catalog (including its synthetic `web` and
+  `local` providers), and role edits are written back atomically
 
 **Dual-engine, one interface**
 - Grok Build mode manages the xAI runtime (TOML configuration, model fallback chains,

@@ -46,6 +46,7 @@ import {
 } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { deepClone } from "@/utils/deepClone";
+import { buildOmpProviderCopy } from "@/utils/ompProviderCopy";
 import { cn } from "@/lib/utils";
 import {
   isWindows,
@@ -835,6 +836,49 @@ function App() {
       icon: provider.icon,
       iconColor: provider.iconColor,
     };
+
+    // Oh My Pi：副本只进 OGG 供应商库（不写 models.yml，列表显示「添加」）。
+    // 必须改写内嵌配置里的 id —— OMP 保存链路只认它，沿用原 id 会变成同 id
+    // upsert（覆盖原条目）却提示「已添加」。
+    if (activeApp === "omp") {
+      const copyId = generateUniqueProviderCopyKey(
+        provider.id,
+        Object.keys(providers),
+      );
+      const copy = buildOmpProviderCopy(
+        provider.settingsConfig,
+        copyId,
+        duplicatedProvider.name,
+      );
+      if (!copy) {
+        toast.error(
+          t("provider.duplicateParseFailed", {
+            defaultValue: "复制失败：无法解析该供应商的配置",
+          }),
+        );
+        return;
+      }
+      try {
+        await ompApi.saveOmpProviderToLibrary(copy.provider);
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", activeApp],
+        });
+        toast.success(
+          t("provider.duplicatedToLibrary", {
+            defaultValue: "已复制到供应商库（未添加），点击「添加」后生效",
+          }),
+        );
+      } catch (error) {
+        console.error("[App] Failed to duplicate OMP provider", error);
+        const errorMessage = extractErrorMessage(error);
+        toast.error(
+          t("provider.duplicateFailed", {
+            defaultValue: "复制供应商失败",
+          }) + (errorMessage ? `: ${errorMessage}` : ""),
+        );
+      }
+      return;
+    }
 
     if (activeApp === "opencode" || activeApp === "pi") {
       let liveProviderIds: string[] = [];

@@ -2,11 +2,11 @@
  * OMP 模型列表行编辑器
  *
  * 替代原来的裸 JSON textarea：每行可编辑 模型ID / 显示名 / 上下文窗口 / 最大输出 /
- * 推理 / API 协议，并支持「获取模型列表」（调用通用 fetch_models_for_config 或
- * OMP 自身的 omp models）。
+ * 推理 / API 协议，并支持「获取模型列表」——凭据齐全时走上游 /models（omp 目录
+ * 只作元数据补齐与回落），无凭据时走 OMP 自身的 `omp models --json`。
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,15 @@ import {
 import { Plus, Trash2, Download, Loader2 } from "lucide-react";
 import type { OmpModelInfo, OmpApiProtocol } from "@/types/omp";
 import { ompApi } from "@/lib/api";
-import { ModelDropdown } from "@/components/providers/forms/shared";
+import { cn } from "@/lib/utils";
+import {
+  ModelDropdown,
+  SortableRows,
+  SortableRow,
+  RowDragHandle,
+  reorderAligned,
+  syncRowIds,
+} from "@/components/providers/forms/shared";
 
 interface OmpModelListEditorProps {
   models: OmpModelInfo[];
@@ -66,6 +74,12 @@ export function OmpModelListEditor({
   const { t } = useTranslation();
   const [isFetching, setIsFetching] = useState(false);
   const [fetched, setFetched] = useState<FetchedOmpModel[]>([]);
+  // 行的稳定 id：与可编辑的模型 ID 解耦，拖动排序与中途编辑互不打断
+  const rowKeysRef = useRef<string[]>([]);
+  const rowIds = syncRowIds(rowKeysRef.current, models.length, () =>
+    crypto.randomUUID(),
+  );
+  rowKeysRef.current = rowIds;
 
   const update = (index: number, patch: Partial<OmpModelInfo>) => {
     onModelsChange(models.map((m, i) => (i === index ? { ...m, ...patch } : m)));
@@ -88,6 +102,10 @@ export function OmpModelListEditor({
     onModelsChange(models.filter((_, i) => i !== index));
   };
 
+  const handleReorder = (activeRowId: string, overRowId: string) => {
+    onModelsChange(reorderAligned(rowIds, models, activeRowId, overRowId));
+  };
+
   const handleFetch = async () => {
     const id = providerId?.trim();
     const canHttp = Boolean(baseUrl?.trim() && apiKey?.trim());
@@ -99,22 +117,44 @@ export function OmpModelListEditor({
     }
     setIsFetching(true);
     try {
-      let result: FetchedOmpModel[] = [];
-      let usedNative = false;
-      // 路径①：OMP 原生目录（omp models --json）。无需密钥——models.yml 里的
-      // apiKey 往往是 secret-bridge 命令而非明文，直接当密钥用必然 401。
+      // 路径①：上游 /models（凭据齐全时优先）。OMP 的 native 目录对自定义供应商
+      // 就是 models.yml 里已配置的条目，先查 native 会把可拉取的模型锁死在
+      // 「已添加的那些」；上游目录才是完整的可选项。
+      let upstream: FetchedOmpModel[] | null = null;
+      if (canHttp) {
+        try {
+          const http = await ompApi.ompFetchUpstreamModels(
+            baseUrl!.trim(),
+            apiKey!.trim(),
+            authHeader,
+          );
+          if (http.length > 0) {
+            upstream = http.map((m) => ({ id: m.id, name: m.name }));
+          }
+        } catch (httpError) {
+          // 上游不可用时回落到 OMP 目录（例如上游 /models 不开放或密钥是
+          // secret-bridge 形态而环境未就绪）
+          console.warn(
+            "[OmpModelListEditor] upstream /models failed, falling back to OMP catalog:",
+            httpError,
+          );
+        }
+      }
+      // 路径②：OMP 原生目录（omp models --json）。无需密钥——models.yml 里的
+      // apiKey 往往是 secret-bridge 命令而非明文，直接当密钥用必然 401；
+      // OAuth 供应商的模型清单也只有这里能拿到。
+      let native: FetchedOmpModel[] | null = null;
       if (id) {
         try {
-          const native = await ompApi.ompListModels(id);
-          if (native.length > 0) {
-            result = native.map((m) => ({
+          const catalog = await ompApi.ompListModels(id);
+          if (catalog.length > 0) {
+            native = catalog.map((m) => ({
               id: m.id,
               name: m.name,
               contextWindow: m.contextWindow,
               maxTokens: m.maxTokens,
               reasoning: m.reasoning,
             }));
-            usedNative = true;
           }
         } catch (nativeError) {
           console.warn(
@@ -123,16 +163,30 @@ export function OmpModelListEditor({
           );
         }
       }
-      // 路径②：HTTP /v1/models 回退。走后端命令：密钥可能是 $ENV / secret-bridge
-      // 形态，前端直接当明文发请求必 401（后端负责解析）。
-      if (!usedNative && canHttp) {
-        const http = await ompApi.ompFetchUpstreamModels(
-          baseUrl!.trim(),
-          apiKey!.trim(),
-          authHeader,
-        );
-        result = http.map((m) => ({ id: m.id, name: m.name }));
+
+      let result: FetchedOmpModel[] = [];
+      let usedNative = false;
+      if (upstream && upstream.length > 0) {
+        // 上游决定「有哪些模型」；native 只为同 id 的模型补齐元数据（上游接口
+        // 不返回上下文窗口/推理标记），native 独有的 id 不追加——那些通常是
+        // 已过时的配置条目，不该混进可导入列表。
+        const known = new Map((native ?? []).map((m) => [m.id, m]));
+        result = upstream.map((m) => {
+          const meta = known.get(m.id);
+          if (!meta) return m;
+          return {
+            ...m,
+            name: m.name || meta.name,
+            contextWindow: meta.contextWindow,
+            maxTokens: meta.maxTokens,
+            reasoning: meta.reasoning,
+          };
+        });
+      } else if (native && native.length > 0) {
+        result = native;
+        usedNative = true;
       }
+
       setFetched(result);
       if (result.length === 0) {
         toast.info(t("providerForm.fetchModelsEmpty", { defaultValue: "未获取到模型" }));
@@ -241,103 +295,118 @@ export function OmpModelListEditor({
         </p>
       )}
 
-      <div className="space-y-2">
-        {models.map((model, index) => (
-          <div
-            key={index}
-            className="space-y-2 rounded-lg border border-border-default p-3"
-          >
-            <div className="flex items-center gap-2">
-              <div className="flex flex-1 gap-1">
-                <Input
-                  value={model.id}
-                  onChange={(e) => update(index, { id: e.target.value })}
-                  placeholder="model-id"
-                  className="flex-1 font-mono text-sm"
-                />
-                {fetched.length > 0 && (
-                  <ModelDropdown
-                    models={fetched}
-                    onSelect={(id) => update(index, { id })}
-                  />
-                )}
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="text-destructive"
-                onClick={() => removeModel(index)}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <Input
-                value={model.name ?? ""}
-                onChange={(e) => update(index, { name: e.target.value })}
-                placeholder={t("omp.displayName", { defaultValue: "显示名（可选）" })}
-                className="text-sm"
-              />
-              <Select
-                value={model.api ?? ""}
-                onValueChange={(v) =>
-                  update(index, {
-                    api: (v || undefined) as OmpApiProtocol | undefined,
-                  })
-                }
-              >
-                <SelectTrigger className="text-sm">
-                  <SelectValue placeholder={t("omp.apiProtocol", { defaultValue: "API 协议" })} />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROTOCOL_OPTIONS.map((p) => (
-                    <SelectItem key={p.value || "inherit"} value={p.value || "__inherit__"}>
-                      {p.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <Input
-                type="number"
-                value={model.contextWindow || ""}
-                onChange={(e) =>
-                  update(index, {
-                    contextWindow: Number(e.target.value.replace(/[^0-9]/g, "")) || 0,
-                  })
-                }
-                placeholder={t("omp.contextWindow", { defaultValue: "上下文窗口" })}
-                className="text-sm"
-              />
-              <Input
-                type="number"
-                value={model.maxTokens || ""}
-                onChange={(e) =>
-                  update(index, {
-                    maxTokens: Number(e.target.value.replace(/[^0-9]/g, "")) || 0,
-                  })
-                }
-                placeholder={t("omp.maxTokens", { defaultValue: "最大输出" })}
-                className="text-sm"
-              />
-            </div>
-            <label className="flex items-center gap-2 text-xs">
-              <Checkbox
-                checked={model.reasoning === true}
-                onCheckedChange={(c) => update(index, { reasoning: !!c })}
-              />
-              {t("omp.reasoning", { defaultValue: "支持推理 (reasoning)" })}
-              {model.reasoning && (
-                <Badge variant="secondary" className="text-[10px]">
-                  reasoning
-                </Badge>
+      <SortableRows rowIds={rowIds} onReorder={handleReorder}>
+        <div className="space-y-2">
+          {models.map((model, index) => (
+            <SortableRow key={rowIds[index]} rowId={rowIds[index]!}>
+              {({ attributes, listeners, isDragging }) => (
+                <div
+                  className={cn(
+                    "space-y-2 rounded-lg border p-3",
+                    isDragging
+                      ? "border-primary/60 bg-background shadow-md"
+                      : "border-border-default",
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <RowDragHandle
+                      attributes={attributes}
+                      listeners={listeners}
+                      isDragging={isDragging}
+                    />
+                    <div className="flex flex-1 gap-1">
+                      <Input
+                        value={model.id}
+                        onChange={(e) => update(index, { id: e.target.value })}
+                        placeholder="model-id"
+                        className="flex-1 font-mono text-sm"
+                      />
+                      {fetched.length > 0 && (
+                        <ModelDropdown
+                          models={fetched}
+                          onSelect={(id) => update(index, { id })}
+                        />
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive"
+                      onClick={() => removeModel(index)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      value={model.name ?? ""}
+                      onChange={(e) => update(index, { name: e.target.value })}
+                      placeholder={t("omp.displayName", { defaultValue: "显示名（可选）" })}
+                      className="text-sm"
+                    />
+                    <Select
+                      value={model.api ?? ""}
+                      onValueChange={(v) =>
+                        update(index, {
+                          api: (v || undefined) as OmpApiProtocol | undefined,
+                        })
+                      }
+                    >
+                      <SelectTrigger className="text-sm">
+                        <SelectValue placeholder={t("omp.apiProtocol", { defaultValue: "API 协议" })} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PROTOCOL_OPTIONS.map((p) => (
+                          <SelectItem key={p.value || "inherit"} value={p.value || "__inherit__"}>
+                            {p.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      type="number"
+                      value={model.contextWindow || ""}
+                      onChange={(e) =>
+                        update(index, {
+                          contextWindow: Number(e.target.value.replace(/[^0-9]/g, "")) || 0,
+                        })
+                      }
+                      placeholder={t("omp.contextWindow", { defaultValue: "上下文窗口" })}
+                      className="text-sm"
+                    />
+                    <Input
+                      type="number"
+                      value={model.maxTokens || ""}
+                      onChange={(e) =>
+                        update(index, {
+                          maxTokens: Number(e.target.value.replace(/[^0-9]/g, "")) || 0,
+                        })
+                      }
+                      placeholder={t("omp.maxTokens", { defaultValue: "最大输出" })}
+                      className="text-sm"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs">
+                    <Checkbox
+                      checked={model.reasoning === true}
+                      onCheckedChange={(c) => update(index, { reasoning: !!c })}
+                    />
+                    {t("omp.reasoning", { defaultValue: "支持推理 (reasoning)" })}
+                    {model.reasoning && (
+                      <Badge variant="secondary" className="text-[10px]">
+                        reasoning
+                      </Badge>
+                    )}
+                  </label>
+                </div>
               )}
-            </label>
-          </div>
-        ))}
-      </div>
+            </SortableRow>
+          ))}
+        </div>
+      </SortableRows>
     </div>
   );
 }

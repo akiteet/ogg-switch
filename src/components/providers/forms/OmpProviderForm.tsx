@@ -37,6 +37,59 @@ type OmpProviderFormProps = Omit<ProviderFormProps, "appId">;
 const OMP_OAUTH_CATEGORY = "official";
 const OMP_API_KEY_CATEGORY = "aggregator";
 
+/**
+ * loopback 地址判定（与后端 `infer_type` 同一口径）：本地推理服务不需要密钥，
+ * 无密钥保存时按 local 落库（校验也只要求 baseUrl）。
+ */
+function isLoopbackBaseUrl(url: string): boolean {
+  const value = url.trim().toLowerCase();
+  if (!value) return false;
+  return (
+    value.includes("localhost") ||
+    value.includes("127.0.0.1") ||
+    value.includes("[::1]") ||
+    value.includes("://::1")
+  );
+}
+
+const OMP_API_PROTOCOLS: readonly string[] = [
+  "openai-completions",
+  "openai-responses",
+  "anthropic-messages",
+  "google-generative-ai",
+];
+
+function isOmpApiProtocol(value: unknown): value is OmpApiProtocol {
+  return typeof value === "string" && OMP_API_PROTOCOLS.includes(value);
+}
+
+/**
+ * 非 OAuth 条目的字段一律「存在即回填」。models.yml 不存 type，后端按 baseUrl
+ * 猜类型（loopback → local）；曾按 type==="api-key" 回填，导致本机中转站
+ * （http://127.0.0.1:…）编辑时 apiKey / headers / authHeader 全部显示为空，
+ * 保存还会清掉 headers、把 authHeader 改回 true。
+ */
+function storedNonOauthFields(config: OmpProviderConfig | null) {
+  const record = (config && config.type !== "oauth"
+    ? config
+    : null) as unknown as Record<string, unknown> | null;
+  const str = (key: string): string =>
+    typeof record?.[key] === "string" ? (record[key] as string) : "";
+  const headers = record?.headers;
+  return {
+    baseUrl: str("baseUrl"),
+    apiKey: str("apiKey"),
+    headers:
+      headers && typeof headers === "object"
+        ? (headers as Record<string, string>)
+        : {},
+    authHeader:
+      typeof record?.authHeader === "boolean"
+        ? (record.authHeader as boolean)
+        : true,
+  };
+}
+
 function parseStoredConfig(
   settingsConfig: Record<string, unknown> | undefined,
 ): OmpProviderConfig | null {
@@ -107,33 +160,21 @@ export function OmpProviderForm({
     initialConfig?.type === "oauth" ? initialConfig.oauthProviderId : "",
   );
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [baseUrl, setBaseUrl] = useState(
-    initialConfig?.type === "api-key" ||
-      initialConfig?.type === "gateway" ||
-      initialConfig?.type === "local"
-      ? initialConfig.baseUrl
-      : "",
+  const storedFields = useMemo(
+    () => storedNonOauthFields(initialConfig),
+    [initialConfig],
   );
-  const [apiKey, setApiKey] = useState(
-    initialConfig?.type === "api-key" || initialConfig?.type === "gateway"
-      ? initialConfig.apiKey
-      : "",
-  );
+  const [baseUrl, setBaseUrl] = useState(storedFields.baseUrl);
+  const [apiKey, setApiKey] = useState(storedFields.apiKey);
   const [apiProtocol, setApiProtocol] = useState<OmpApiProtocol>(
-    initialConfig && "api" in initialConfig && initialConfig.api
+    isOmpApiProtocol(initialConfig?.api)
       ? initialConfig.api
       : "openai-completions",
   );
   const [headers, setHeaders] = useState<Record<string, string>>(
-    initialConfig?.type === "api-key" || initialConfig?.type === "gateway"
-      ? (initialConfig.headers ?? {})
-      : {},
+    storedFields.headers,
   );
-  const [authHeader, setAuthHeader] = useState(
-    initialConfig?.type === "api-key"
-      ? (initialConfig.authHeader ?? true)
-      : true,
-  );
+  const [authHeader, setAuthHeader] = useState(storedFields.authHeader);
   const [models, setModels] = useState<OmpModelInfo[]>(
     initialConfig?.models ?? [],
   );
@@ -242,8 +283,13 @@ export function OmpProviderForm({
     }
     if (preset.defaultApi) setApiProtocol(preset.defaultApi);
     if (preset.defaultBaseUrl) setBaseUrl(preset.defaultBaseUrl);
-    // API Key 默认留空（对齐 cc-switch）：envKeyName 仅作为帮助信息，不预填占位值
-    if (preset.type === "api-key" || preset.type === "gateway") {
+    // API Key 默认留空（对齐 cc-switch）：envKeyName 仅作为帮助信息，不预填占位值。
+    // 本地推理（local）同样清空——它不需要密钥，残留旧值会让条目被存成 api-key。
+    if (
+      preset.type === "api-key" ||
+      preset.type === "gateway" ||
+      preset.type === "local"
+    ) {
       setApiKey("");
     }
     // OAuth 预设不 seed 模型清单：模型由 omp 从上游自动发现
@@ -292,7 +338,26 @@ export function OmpProviderForm({
           oauthProviderId: oauthProviderId || id,
           api: apiProtocol,
         };
-      case "api-key":
+      case "api-key": {
+        // 无密钥 + loopback = 本地推理（Ollama / LM Studio 等预设
+        // requiresApiKey:false）：按 local 保存，否则会被「api-key 必须有密钥」
+        // 的校验拦死，这类供应商根本存不下去。
+        if (!apiKey.trim() && isLoopbackBaseUrl(baseUrl)) {
+          return {
+            id,
+            name,
+            type: "local",
+            category: "local",
+            description,
+            websiteUrl,
+            icon,
+            models: normalizedModels,
+            baseUrl,
+            api: apiProtocol,
+            headers,
+            authHeader,
+          };
+        }
         return {
           id,
           name,
@@ -308,6 +373,7 @@ export function OmpProviderForm({
           headers,
           authHeader,
         };
+      }
     }
   };
 

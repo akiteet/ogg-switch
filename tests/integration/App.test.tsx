@@ -8,6 +8,9 @@ import {
   setCurrentProviderId,
   setProviders,
   setSettings,
+  setOmpProviders,
+  getOmpLibraryWrites,
+  getOmpLiveWrites,
 } from "../msw/state";
 import { emitTauriEvent } from "../msw/tauriMocks";
 import { server } from "../msw/server";
@@ -468,5 +471,54 @@ describe("App integration with MSW", () => {
 
     expect(skillsPanelMocks.openDiscovery).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("unified-skills-panel")).toBeInTheDocument();
+  });
+
+  it("duplicates an Oh My Pi provider into the library instead of overwriting it", async () => {
+    localStorage.setItem("ogg-switch-last-app", "omp");
+    setOmpProviders(
+      [
+        {
+          id: "workbuddy",
+          name: "WorkBuddy",
+          type: "api-key",
+          category: "api",
+          models: [],
+          baseUrl: "http://127.0.0.1:7864/v1",
+          apiKey: "wbk_test",
+          api: "openai-completions",
+          inConfig: true,
+        },
+      ],
+      [{ role: "default", providerId: "workbuddy", modelId: "cn:hy3" }],
+    );
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "workbuddy",
+      ),
+    );
+
+    fireEvent.click(screen.getByText("duplicate"));
+
+    // 副本以新 id 出现在列表里（旧实现是「什么都没复制却提示已添加」）
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "workbuddy-copy",
+      ),
+    );
+    expect(screen.getByTestId("provider-list").textContent).toContain(
+      "WorkBuddy copy",
+    );
+
+    // 只写库（未添加状态），不写 models.yml
+    expect(getOmpLibraryWrites().map((p) => p.id)).toEqual(["workbuddy-copy"]);
+    expect(getOmpLibraryWrites()[0]!.name).toBe("WorkBuddy copy");
+    expect(getOmpLiveWrites()).toEqual([]);
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      expect.stringContaining("已复制到供应商库"),
+    );
   });
 });

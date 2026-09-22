@@ -31,10 +31,13 @@ OGG Switch 基于 **Tauri 2** 与 **Rust** 构建，是一个约 25 MB 的原生
   的划分始终准确
 
 **Oh My Pi 的语义角色编排**
-- 十个专用角色——`default`、`smol`、`slow`、`plan`、`commit`、`vision`、
-  `designer`、`task`、`advisor`、`tiny`——每个角色映射到一组供应商/模型，
-  并可选配推理深度
-- 角色修改会对照实时目录进行校验，并以原子方式写回
+- 全部 15 个内置角色——chat 区 10 个（`default`、`smol`、`slow`、`vision`、`plan`、
+  `commit`、`tiny`、`memory`、`task`、`advisor`）加 kind 区 5 个（`image`、`web`、
+  `speech`、`dictation`、`judge`）——每个角色映射到一组供应商/模型，并可可选配
+  推理深度；`config.yml` 里的自定义 `modelRoles` 键同样会列出，OMP 里配置过的
+  角色不会在界面里消失
+- 角色候选来自 OMP 自己的目录（含 `web`、`local` 这两个 OMP 内置的合成供应商），
+  角色修改以原子方式写回
 
 **双引擎，单界面**
 - Grok Build 模式管理 xAI 运行时（TOML 配置、模型回退链、路由）

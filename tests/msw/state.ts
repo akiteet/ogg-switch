@@ -6,6 +6,7 @@ import type {
   SessionMeta,
   Settings,
 } from "@/types";
+import type { OmpProviderConfig, OmpSwitchConfig } from "@/types/omp";
 import { deepClone } from "@/utils/deepClone";
 
 type ProvidersByApp = Record<AppId, Record<string, Provider>>;
@@ -204,10 +205,50 @@ let mcpConfigs: McpConfigState = {
 const cloneProviders = (value: ProvidersByApp) =>
   deepClone(value) as ProvidersByApp;
 
+// ── Oh My Pi ───────────────────────────────────────────────────────────────
+// OMP 的真源是 ~/.omp/agent（models.yml / config.yml），走 read_omp_config 与
+// save_omp_provider* 命令，不经过 SQLite 供应商表，所以单独维护一份 mock 状态。
+let ompProviders: Record<string, OmpProviderConfig> = {};
+let ompRoles: OmpSwitchConfig["roles"] = [];
+/** 「复制」走的是库写入：单独记录，便于断言 models.yml（live）未被写 */
+let ompLibraryWrites: OmpProviderConfig[] = [];
+let ompLiveWrites: OmpProviderConfig[] = [];
+
+export const setOmpProviders = (
+  list: OmpProviderConfig[],
+  roles: OmpSwitchConfig["roles"] = [],
+) => {
+  ompProviders = Object.fromEntries(list.map((p) => [p.id, deepClone(p)]));
+  ompRoles = deepClone(roles);
+};
+
+export const getOmpConfig = (): OmpSwitchConfig => ({
+  version: 1,
+  providers: deepClone(Object.values(ompProviders)),
+  roles: deepClone(ompRoles),
+});
+
+export const saveOmpProviderToLibrary = (provider: OmpProviderConfig) => {
+  ompLibraryWrites.push(deepClone(provider));
+  ompProviders[provider.id] = { ...deepClone(provider), inConfig: false };
+};
+
+export const recordOmpLiveSave = (provider: OmpProviderConfig) => {
+  ompLiveWrites.push(deepClone(provider));
+  ompProviders[provider.id] = { ...deepClone(provider), inConfig: true };
+};
+
+export const getOmpLibraryWrites = () => deepClone(ompLibraryWrites);
+export const getOmpLiveWrites = () => deepClone(ompLiveWrites);
+
 export const resetProviderState = () => {
   providers = createDefaultProviders();
   current = createDefaultCurrent();
   liveProviderIds = { opencode: [] };
+  ompProviders = {};
+  ompRoles = [];
+  ompLibraryWrites = [];
+  ompLiveWrites = [];
   sessionsState = createDefaultSessions();
   sessionMessagesState = createDefaultSessionMessages();
   settingsState = {

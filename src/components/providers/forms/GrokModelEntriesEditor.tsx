@@ -5,7 +5,13 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelDropdown } from "@/components/providers/forms/shared";
+import {
+  ModelDropdown,
+  SortableRows,
+  SortableRow,
+  RowDragHandle,
+  reorderAligned,
+} from "@/components/providers/forms/shared";
 import { cn } from "@/lib/utils";
 import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
 import {
@@ -104,6 +110,13 @@ export function GrokModelEntriesEditor({
     });
   };
 
+  // 拖动重排：行 id（uuid）驱动。默认模型以条目 id 标识、不绑定行位置，
+  // 行序变化不影响它是哪一行，原样带回即可（reconcileDefaultKey 会校验存在性）。
+  const handleReorder = (activeRowId: string, overRowId: string) => {
+    const nextEntries = reorderAligned(rowKeys, entries, activeRowId, overRowId);
+    onChange({ entries: nextEntries, defaultKey: effectiveDefaultKey });
+  };
+
   // 只拉取列表并展示在「模型 ID」右侧的下拉里,不自动改动条目。
   const handleFetchModels = async () => {
     if (!baseUrl.trim() || !apiKey.trim()) {
@@ -173,106 +186,117 @@ export function GrokModelEntriesEditor({
         </p>
       )}
 
-      <div className="space-y-3">
-        {entries.map((entry, index) => (
-          <div
-            key={rowKeys[index]}
-            className={cn(
-              "space-y-3 rounded-lg border p-4",
-              entry.id === effectiveDefaultKey
-                ? "border-primary/50 bg-primary/5"
-                : "border-border-default",
-            )}
-          >
-            <div className="flex items-center gap-3">
-              <input
-                type="radio"
-                name="grok-default-model"
-                className="size-4 accent-primary"
-                checked={entry.id === effectiveDefaultKey}
-                onChange={() =>
-                  onChange({ entries, defaultKey: entry.id })
-                }
-                aria-label={t("grokBuild.models.setDefault", {
-                  defaultValue: "设为默认",
-                })}
-              />
-              <span className="text-xs text-muted-foreground">
-                {entry.id === effectiveDefaultKey
-                  ? t("grokBuild.models.isDefault", { defaultValue: "默认模型" })
-                  : t("grokBuild.models.setDefaultHint", {
-                      defaultValue: "设为默认",
-                    })}
-              </span>
-              <div className="ml-auto">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="text-destructive"
-                  disabled={entries.length <= 1}
-                  onClick={() => removeEntry(index)}
-                >
-                  <Trash2 className="mr-1 h-3.5 w-3.5" />
-                  {t("common.delete", { defaultValue: "删除" })}
-                </Button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <Label className="text-xs">
-                  {t("grokBuild.models.id", { defaultValue: "模型 ID" })}
-                </Label>
-                <div className="flex gap-1">
-                  <Input
-                    value={entry.id}
-                    onChange={(e) => updateEntry(index, { id: e.target.value })}
-                    placeholder="grok-4.6"
-                    className="flex-1"
-                  />
-                  {fetchedModels.length > 0 && (
-                    <ModelDropdown
-                      models={fetchedModels}
-                      onSelect={(id) => updateEntry(index, { id })}
-                    />
+      <SortableRows rowIds={rowKeys} onReorder={handleReorder}>
+        <div className="space-y-3">
+          {entries.map((entry, index) => (
+            <SortableRow key={rowKeys[index]} rowId={rowKeys[index]!}>
+              {({ attributes, listeners, isDragging }) => (
+                <div
+                  className={cn(
+                    "space-y-3 rounded-lg border p-4",
+                    entry.id === effectiveDefaultKey
+                      ? "border-primary/50 bg-primary/5"
+                      : "border-border-default",
+                    isDragging && "border-primary/60 bg-background shadow-md",
                   )}
+                >
+                  <div className="flex items-center gap-3">
+                    <RowDragHandle
+                      attributes={attributes}
+                      listeners={listeners}
+                      isDragging={isDragging}
+                    />
+                    <input
+                      type="radio"
+                      name="grok-default-model"
+                      className="size-4 accent-primary"
+                      checked={entry.id === effectiveDefaultKey}
+                      onChange={() =>
+                        onChange({ entries, defaultKey: entry.id })
+                      }
+                      aria-label={t("grokBuild.models.setDefault", {
+                        defaultValue: "设为默认",
+                      })}
+                    />
+                    <span className="text-xs text-muted-foreground">
+                      {entry.id === effectiveDefaultKey
+                        ? t("grokBuild.models.isDefault", { defaultValue: "默认模型" })
+                        : t("grokBuild.models.setDefaultHint", {
+                            defaultValue: "设为默认",
+                          })}
+                    </span>
+                    <div className="ml-auto">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive"
+                        disabled={entries.length <= 1}
+                        onClick={() => removeEntry(index)}
+                      >
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        {t("common.delete", { defaultValue: "删除" })}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs">
+                        {t("grokBuild.models.id", { defaultValue: "模型 ID" })}
+                      </Label>
+                      <div className="flex gap-1">
+                        <Input
+                          value={entry.id}
+                          onChange={(e) => updateEntry(index, { id: e.target.value })}
+                          placeholder="grok-4.6"
+                          className="flex-1"
+                        />
+                        {fetchedModels.length > 0 && (
+                          <ModelDropdown
+                            models={fetchedModels}
+                            onSelect={(id) => updateEntry(index, { id })}
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">
+                        {t("grokBuild.models.displayName", { defaultValue: "显示名" })}
+                      </Label>
+                      <Input
+                        value={entry.displayName}
+                        onChange={(e) =>
+                          updateEntry(index, { displayName: e.target.value })
+                        }
+                        placeholder={entry.id}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">
+                        {t("grokBuild.models.contextWindow", { defaultValue: "上下文窗口" })}
+                      </Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={String(entry.contextWindow)}
+                        onChange={(e) =>
+                          updateEntry(index, {
+                            contextWindow:
+                              Number(e.target.value.replace(/[^0-9]/g, "")) || 0,
+                          })
+                        }
+                        placeholder="500000"
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">
-                  {t("grokBuild.models.displayName", { defaultValue: "显示名" })}
-                </Label>
-                <Input
-                  value={entry.displayName}
-                  onChange={(e) =>
-                    updateEntry(index, { displayName: e.target.value })
-                  }
-                  placeholder={entry.id}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">
-                  {t("grokBuild.models.contextWindow", { defaultValue: "上下文窗口" })}
-                </Label>
-                <Input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={String(entry.contextWindow)}
-                  onChange={(e) =>
-                    updateEntry(index, {
-                      contextWindow:
-                        Number(e.target.value.replace(/[^0-9]/g, "")) || 0,
-                    })
-                  }
-                  placeholder="500000"
-                />
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
+              )}
+            </SortableRow>
+          ))}
+        </div>
+      </SortableRows>
     </section>
   );
 }

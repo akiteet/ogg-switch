@@ -68,6 +68,11 @@ pub struct OmpModelInfo {
     pub context_window: i64,
     #[serde(default)]
     pub max_tokens: i64,
+    /// OMP 目录里的模型种类（chat / tiny / image / tts / stt / search / judge /
+    /// embedding / rerank）。仅由 `omp models --json` 填充，**不写 models.yml**
+    /// （那是 OMP 从目录推导的运行时信息，不是用户配置）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,9 +108,14 @@ fn config_path(dir: &Path) -> PathBuf {
     first_existing(dir, &["config.yml", "config.yaml"]).unwrap_or_else(|| dir.join("config.yml"))
 }
 
-fn infer_type(base_url: &str, api: &str) -> (String, String) {
+/// 从 baseUrl / api 推断供应商类型。
+///
+/// `has_api_key`：条目带非空 apiKey。密钥优先于 host 猜测——中转站跑在本机
+/// loopback 上是常见形态，仅凭 127.0.0.1 判 local 会让编辑表单认为该条目
+/// 「不需要密钥」而丢掉 apiKey / headers / authHeader 的回显（保存即写坏配置）。
+fn infer_type(base_url: &str, api: &str, has_api_key: bool) -> (String, String) {
     let url = base_url.to_lowercase();
-    if url.contains("localhost") || url.contains("127.0.0.1") {
+    if !has_api_key && (url.contains("localhost") || url.contains("127.0.0.1")) {
         return ("local".into(), "local".into());
     }
     if url.contains("openrouter")
@@ -162,7 +172,11 @@ fn parse_models_str(text: &str) -> Result<Vec<OmpProviderConfig>, String> {
             .and_then(|v| v.as_str())
             .unwrap_or(id)
             .to_string();
-        let (kind, category) = infer_type(&base_url, &api);
+        let has_api_key = api_key
+            .as_deref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false);
+        let (kind, category) = infer_type(&base_url, &api, has_api_key);
         let models = get("models")
             .and_then(|v| v.as_sequence())
             .map(|arr| {
@@ -189,6 +203,8 @@ fn parse_models_str(text: &str) -> Result<Vec<OmpProviderConfig>, String> {
                                 .or_else(|| f("max_tokens"))
                                 .map(as_i64)
                                 .unwrap_or(0),
+                            // models.yml 的模型条目没有 kind（那是 OMP 目录的运行时信息）
+                            kind: None,
                             id: mid,
                         })
                     })
@@ -292,24 +308,17 @@ fn parse_roles_file(path: &Path) -> Result<Vec<OmpModelRole>, String> {
     parse_roles_str(&text)
 }
 
-fn merge_yaml_map(path: &Path, patch: BTreeMap<String, YamlValue>) -> Result<YamlValue, String> {
-    let mut root = if path.exists() {
+/// 读取 YAML 根映射；文件不存在 / 为空 / 解析失败时回落到空映射。
+fn read_yaml_map_or_empty(path: &Path) -> YamlValue {
+    if path.exists() {
         let text = fs::read_to_string(path).unwrap_or_default();
-        if text.trim().is_empty() {
-            YamlValue::Mapping(serde_yaml::Mapping::new())
-        } else {
-            serde_yaml::from_str(&text).unwrap_or(YamlValue::Mapping(serde_yaml::Mapping::new()))
+        if !text.trim().is_empty() {
+            if let Ok(root) = serde_yaml::from_str::<YamlValue>(&text) {
+                return root;
+            }
         }
-    } else {
-        YamlValue::Mapping(serde_yaml::Mapping::new())
-    };
-    let obj = root
-        .as_mapping_mut()
-        .ok_or_else(|| "YAML 根节点必须是对象".to_string())?;
-    for (key, value) in patch {
-        obj.insert(YamlValue::String(key), value);
     }
-    Ok(root)
+    YamlValue::Mapping(serde_yaml::Mapping::new())
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
@@ -600,6 +609,44 @@ fn providers_to_yaml_value(providers: &[OmpProviderConfig]) -> YamlValue {
     YamlValue::Mapping(root)
 }
 
+/// 纯函数：把 OGG 的角色列表写进 config.yml 的 modelRoles。
+///
+/// OGG 只认 `provider/model[:级别]` 形态的取值，解析不出来的条目永远不会出现在
+/// `config.roles` 里；整块替换会把它们连带删掉——而 `write_live_config` 在保存
+/// 供应商、设默认供应商时都会跑，等于任何一次无关操作都在删用户配置。因此：
+/// - 既有配置里**解析不出来**的条目原样保留（OGG 表示不了，但 OMP 认）；
+/// - **解析得出来**的条目以 `config.roles` 为准（在则覆盖，不在即用户在 OGG 里删了）。
+fn merge_model_roles(existing: Option<&YamlValue>, roles: &[OmpModelRole]) -> YamlValue {
+    let mut mapping = serde_yaml::Mapping::new();
+    if let Some(YamlValue::Mapping(old)) = existing {
+        for (key, value) in old {
+            if key.as_str().is_none() {
+                continue;
+            }
+            let parsable = value
+                .as_str()
+                .map(|s| parse_role_selector(s).is_some())
+                .unwrap_or(false);
+            if !parsable {
+                mapping.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    for role in roles {
+        let selector = match &role.thinking_level {
+            Some(level) if !level.is_empty() => {
+                format!("{}/{}:{}", role.provider_id, role.model_id, level)
+            }
+            _ => format!("{}/{}", role.provider_id, role.model_id),
+        };
+        mapping.insert(
+            YamlValue::String(role.role.clone()),
+            YamlValue::String(selector),
+        );
+    }
+    YamlValue::Mapping(mapping)
+}
+
 fn write_live_config(config: &OmpSwitchConfig) -> Result<(), String> {
     let dir = omp_agent_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("无法创建 ~/.omp/agent: {e}"))?;
@@ -610,24 +657,16 @@ fn write_live_config(config: &OmpSwitchConfig) -> Result<(), String> {
         .map_err(|e| format!("序列化 models.yml 失败: {e}"))?;
     atomic_write(&models, &models_yaml)?;
 
-    let mut roles = serde_yaml::Mapping::new();
-    for role in &config.roles {
-        let selector = match &role.thinking_level {
-            Some(level) if !level.is_empty() => {
-                format!("{}/{}:{}", role.provider_id, role.model_id, level)
-            }
-            _ => format!("{}/{}", role.provider_id, role.model_id),
-        };
-        roles.insert(
-            YamlValue::String(role.role.clone()),
-            YamlValue::String(selector),
-        );
-    }
-    let mut patch = BTreeMap::new();
-    patch.insert("modelRoles".into(), YamlValue::Mapping(roles));
-    let merged = merge_yaml_map(&cfg, patch)?;
+    // config.yml 只覆盖 modelRoles 一个键，其余用户配置（thinking、task、retry…）
+    // 原样保留。
+    let mut root = read_yaml_map_or_empty(&cfg);
+    let roles = merge_model_roles(root.get("modelRoles"), &config.roles);
+    let obj = root
+        .as_mapping_mut()
+        .ok_or_else(|| "YAML 根节点必须是对象".to_string())?;
+    obj.insert(YamlValue::String("modelRoles".into()), roles);
     let config_yaml =
-        serde_yaml::to_string(&merged).map_err(|e| format!("序列化 config.yml 失败: {e}"))?;
+        serde_yaml::to_string(&root).map_err(|e| format!("序列化 config.yml 失败: {e}"))?;
     atomic_write(&cfg, &config_yaml)?;
     Ok(())
 }
@@ -1123,6 +1162,31 @@ pub async fn save_omp_provider(mut provider: OmpProviderConfig) -> Result<(), St
     }
     insert_preserving_order(&mut config.providers, provider);
     write_live_config(&config)
+}
+
+/// 纯逻辑：只写 meta store（不碰 models.yml），命令与单测共用。
+fn write_provider_to_library(provider: &OmpProviderConfig) -> Result<(), String> {
+    let mut meta = read_provider_meta();
+    let existing = meta.get(&provider.id);
+    let existing_sort_index = existing.and_then(|m| m.sort_index);
+    let existing_usage_script = existing.and_then(|m| m.usage_script.clone());
+    meta.insert(
+        provider.id.clone(),
+        meta_entry_from_provider(provider, existing_sort_index, existing_usage_script),
+    );
+    write_provider_meta(&meta)
+}
+
+/// 只写入 OGG 的供应商库（meta store），**不写 models.yml**。
+///
+/// 「复制供应商」用：副本默认是「未添加」状态（列表显示「添加」），用户确认后再走
+/// `save_omp_provider` 进 live。这样复制永远不改动 OMP 的实际配置，也避免同 id
+/// upsert 造成的「假成功」（旧实现按同 id 覆盖原条目，界面却提示已添加）。
+/// OAuth 条目不参与库化合成（`synthesize_library_providers` 跳过 oauth），
+/// 它由 `synthesize_oauth_providers` 按 meta 的 provider_type 直接合成 official 卡片。
+#[tauri::command]
+pub async fn save_omp_provider_to_library(provider: OmpProviderConfig) -> Result<(), String> {
+    write_provider_to_library(&provider)
 }
 
 #[tauri::command]
@@ -1628,12 +1692,24 @@ fn launch_login_terminal(command: &str) -> Result<(), String> {
 
 /// 从上游 /v1/models 获取模型列表（由前端用 baseUrl+apiKey 调用通用命令）。
 /// 这里保留 OMP 侧的模型目录读取：`omp models --json`。
+///
+/// `kind` 透传给 `omp models --kind <kind>`（默认 chat，与 OMP CLI 默认一致）。
+/// 非 chat 角色（image / web / speech / dictation / judge）的候选模型属于
+/// image / search / tts / stt / judge 等 kind，必须显式传 `all` 才拿得到。
 #[tauri::command]
-pub async fn omp_list_models(provider_id: String) -> Result<Vec<OmpModelInfo>, String> {
+pub async fn omp_list_models(
+    provider_id: String,
+    kind: Option<String>,
+) -> Result<Vec<OmpModelInfo>, String> {
     if !omp_cli_available() {
         return Ok(vec![]);
     }
-    let output = run_omp(&["models", "--json"])?;
+    let kind = kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("chat");
+    let output = run_omp(&["models", "--json", "--kind", kind])?;
     if !output.status.success() {
         return Ok(vec![]);
     }
@@ -1669,10 +1745,58 @@ pub async fn omp_list_models(provider_id: String) -> Result<Vec<OmpModelInfo>, S
             reasoning: m.get("reasoning").and_then(|v| v.as_bool()),
             context_window: m.get("contextWindow").and_then(|v| v.as_i64()).unwrap_or(0),
             max_tokens: m.get("maxTokens").and_then(|v| v.as_i64()).unwrap_or(0),
+            kind: m.get("kind").and_then(|v| v.as_str()).map(str::to_string),
             id: id.to_string(),
         });
     }
     Ok(out)
+}
+
+/// OMP 目录里「已启用」的供应商（`omp models --json --kind all` 的 provider 去重）。
+/// 包含 models.yml 里没有的合成供应商——`web`（联网搜索后端池）、`local`
+/// （本机 tts/stt 模型）以及各类 OAuth 供应商。角色选择器需要它们才能选到
+/// `web/parallel`、`local/kokoro` 这类取值；供应商列表不展示（无 baseUrl/apiKey 可配）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmpEnabledProvider {
+    pub id: String,
+    pub model_count: i64,
+}
+
+#[tauri::command]
+pub async fn omp_list_enabled_providers() -> Result<Vec<OmpEnabledProvider>, String> {
+    if !omp_cli_available() {
+        return Ok(vec![]);
+    }
+    let output = run_omp(&["models", "--json", "--kind", "all"])?;
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+    let parsed: JsonValue = serde_json::from_slice(&output.stdout).unwrap_or(JsonValue::Null);
+    let arr = parsed
+        .get("models")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(count_by_provider(&arr))
+}
+
+/// 纯函数：按 provider 统计模型条数，保持首次出现顺序（OMP 输出已按 provider 排序）。
+fn count_by_provider(models: &[JsonValue]) -> Vec<OmpEnabledProvider> {
+    let mut out: Vec<OmpEnabledProvider> = Vec::new();
+    for m in models {
+        let Some(provider) = m.get("provider").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        match out.iter_mut().find(|p| p.id == provider) {
+            Some(entry) => entry.model_count += 1,
+            None => out.push(OmpEnabledProvider {
+                id: provider.to_string(),
+                model_count: 1,
+            }),
+        }
+    }
+    out
 }
 
 /// 解析密钥形态：`!cmd` / `$(cmd)` → 执行命令取 stdout（secret-bridge）；
@@ -1787,6 +1911,8 @@ pub async fn omp_fetch_upstream_models(
                 reasoning: None,
                 context_window: 0,
                 max_tokens: 0,
+                // 上游 /models 只给 id / 名称，没有 kind（kind 是 OMP 目录的概念）
+                kind: None,
             })
         })
         .collect())
@@ -1875,6 +2001,100 @@ modelProviderOrder:
         assert_eq!(plan.provider_id, "SUPER-NB");
         assert_eq!(plan.model_id, "gpt-5.6-terra");
         assert_eq!(plan.thinking_level.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn infer_type_prefers_api_key_over_loopback_host() {
+        // loopback + 密钥 = 本机中转站 / 本地带鉴权服务：判成 local 会让编辑表单
+        // 认为 apiKey 不适用而不回填（保存即丢密钥、headers、authHeader）。
+        assert_eq!(
+            infer_type("http://127.0.0.1:7864/v1", "openai-completions", true).0,
+            "api-key"
+        );
+        assert_eq!(
+            infer_type("http://localhost:11434/v1", "openai-completions", true).0,
+            "api-key"
+        );
+        // 无密钥的 loopback 才是真正的本地推理
+        assert_eq!(
+            infer_type("http://localhost:11434/v1", "openai-completions", false).0,
+            "local"
+        );
+        // 非 loopback 分支不受影响
+        assert_eq!(
+            infer_type("https://api.deepseek.com", "openai-completions", true).0,
+            "api-key"
+        );
+        assert_eq!(
+            infer_type("https://openrouter.ai/api/v1", "openai-completions", false).0,
+            "gateway"
+        );
+    }
+
+    #[test]
+    fn loopback_provider_with_key_round_trips_credentials() {
+        // 真实形态：本机中转站挂密钥。解析后类型必须是 api-key，密钥原样带回前端。
+        let providers = parse_models_str(
+            r#"
+providers:
+    workbuddy:
+        baseUrl: http://127.0.0.1:7864/v1
+        apiKey: wbk_test_key
+        api: openai-completions
+        authHeader: true
+"#,
+        )
+        .expect("parse models");
+        let p = providers.iter().find(|p| p.id == "workbuddy").unwrap();
+        assert_eq!(p.r#type, "api-key");
+        assert_eq!(p.api_key.as_deref(), Some("wbk_test_key"));
+        assert_eq!(p.auth_header, Some(true));
+    }
+
+    #[test]
+    fn merge_model_roles_keeps_unparsable_entries() {
+        let existing: YamlValue = serde_yaml::from_str(
+            r#"
+default: workbuddy/cn:hy3:low
+designer: Rigel/grok-4.6
+judge: auto
+"#,
+        )
+        .unwrap();
+        let roles = vec![OmpModelRole {
+            role: "default".into(),
+            provider_id: "workbuddy".into(),
+            model_id: "cn:hy3".into(),
+            thinking_level: Some("high".into()),
+        }];
+        let merged = merge_model_roles(Some(&existing), &roles);
+        let map = merged.as_mapping().unwrap();
+        let get = |key: &str| {
+            map.get(&YamlValue::String(key.into()))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        // OGG 管理的角色被覆盖
+        assert_eq!(get("default").as_deref(), Some("workbuddy/cn:hy3:high"));
+        // 解析不出来的（judge: auto）原样保留，不被静默删除
+        assert_eq!(get("judge").as_deref(), Some("auto"));
+        // 解析得出来但不在 config.roles 里 = 用户在 OGG 里删除了该角色
+        assert!(get("designer").is_none());
+    }
+
+    #[test]
+    fn counts_enabled_providers_from_catalog_json() {
+        let models: Vec<JsonValue> = serde_json::from_str(
+            r#"[{"provider":"web","kind":"search"},{"provider":"web","kind":"search"},
+                {"provider":"local","kind":"tts"},{"id":"no-provider"}]"#,
+        )
+        .unwrap();
+        let counted = count_by_provider(&models);
+        assert_eq!(counted.len(), 2);
+        assert_eq!(counted[0].id, "web");
+        assert_eq!(counted[0].model_count, 2);
+        assert_eq!(counted[1].id, "local");
+        assert_eq!(counted[1].model_count, 1);
     }
 
     #[test]
@@ -2487,6 +2707,105 @@ retry:
             let meta_after = read_provider_meta();
             assert!(meta_after.contains_key("优云智算"));
             assert!(!meta_after.contains_key(uuid));
+        })();
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    /// 「复制供应商」只进库：models.yml 必须一字节不动，副本以 in_config=false
+    /// 出现在列表里（UI 显示「添加」）。
+    #[test]
+    #[serial_test::serial]
+    fn library_only_save_keeps_models_yml_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", tmp.path());
+        (|| {
+            let dir = omp_agent_dir();
+            fs::create_dir_all(&dir).unwrap();
+            let original_yml = "providers:\n  workbuddy:\n    baseUrl: http://127.0.0.1:7864/v1\n    apiKey: wbk_x\n    api: openai-completions\n";
+            fs::write(models_path(&dir), original_yml).unwrap();
+
+            let mut copy = sample_provider("workbuddy-copy");
+            copy.name = "WorkBuddy copy".into();
+            write_provider_to_library(&copy).unwrap();
+
+            // models.yml 未被写入
+            assert_eq!(fs::read_to_string(models_path(&dir)).unwrap(), original_yml);
+
+            // meta 快照带上新 id，且快照自身是库状态
+            let meta = read_provider_meta();
+            let entry = meta.get("workbuddy-copy").expect("copy should be in meta");
+            assert_eq!(entry.provider_type.as_deref(), Some("api-key"));
+            assert_eq!(
+                entry.config.as_ref().map(|c| c.in_config),
+                Some(false),
+                "library snapshot must not be marked in-config"
+            );
+
+            // 列表里两个条目都在：原件 live、副本库状态（UI 显示「添加」）
+            let config = load_live_config().unwrap();
+            let original = config
+                .providers
+                .iter()
+                .find(|p| p.id == "workbuddy")
+                .expect("original stays live");
+            assert!(original.in_config);
+            let synthesized = config
+                .providers
+                .iter()
+                .find(|p| p.id == "workbuddy-copy")
+                .expect("copy synthesized from library");
+            assert!(!synthesized.in_config);
+            // 名称/密钥等字段随快照保留
+            assert_eq!(synthesized.name, "WorkBuddy copy");
+            assert_eq!(synthesized.api_key.as_deref(), Some("sk-test"));
+        })();
+        match old_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    /// OAuth 副本不走库化合成（那条路径会跳过 oauth），而是按 provider_type 合成
+    /// official 卡片；同样不写 models.yml。
+    #[test]
+    #[serial_test::serial]
+    fn library_copy_of_oauth_provider_synthesizes_official_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", tmp.path());
+        (|| {
+            let dir = omp_agent_dir();
+            fs::create_dir_all(&dir).unwrap();
+            let original_yml = "providers:\n  deepseek:\n    baseUrl: https://api.deepseek.com\n    apiKey: sk-x\n";
+            fs::write(models_path(&dir), original_yml).unwrap();
+
+            let mut copy = sample_provider("openai-codex-copy");
+            copy.name = "openai-codex copy".into();
+            copy.r#type = "oauth".into();
+            copy.category = "subscription".into();
+            copy.oauth_provider_id = Some("openai-codex".into());
+            copy.base_url = None;
+            copy.api_key = None;
+            write_provider_to_library(&copy).unwrap();
+
+            assert_eq!(fs::read_to_string(models_path(&dir)).unwrap(), original_yml);
+
+            let config = load_live_config().unwrap();
+            let synthesized = config
+                .providers
+                .iter()
+                .find(|p| p.id == "openai-codex-copy")
+                .expect("oauth copy should be visible");
+            assert_eq!(synthesized.r#type, "oauth");
+            assert_eq!(
+                synthesized.oauth_provider_id.as_deref(),
+                Some("openai-codex"),
+                "副本沿用同一 OMP 登录凭据"
+            );
         })();
         match old_test_home {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
