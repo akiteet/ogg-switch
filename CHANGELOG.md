@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-22
+
+### Added
+
+- Oh My Pi: the role manager covers OMP's full role set — the ten chat roles plus
+  `image`, `web`, `speech`, `dictation` and `judge` — and custom roles can be created
+  with any name; they are written to `config.yml:modelRoles` like built-in roles and
+  can be edited or deleted again
+- Oh My Pi: role candidates come from OMP's own catalog, including its synthetic
+  `web` and `local` providers
+- Provider forms: drag-and-drop ordering for the model list rows in Oh My Pi and
+  Grok Build
+
+### Fixed
+
+- Oh My Pi: role candidates are limited to the model kinds each role accepts, so an
+  assignment always resolves inside OMP; the dialog explains when a provider's own
+  models are out of scope for the selected role
+- Oh My Pi: duplicating a provider creates a new library entry with its own id
+  (`<id>-copy`, `-copy-2`, …) and leaves `models.yml` untouched — confirm it with
+  "Add" when you want it active
+- Oh My Pi: editing a provider keeps its API key, custom headers and
+  "send Authorization header" setting
+- Oh My Pi: "fetch models" prefers the provider's upstream `/models` listing, with
+  OMP's catalog as the fallback and as the source of context window / reasoning
+  metadata
+- Oh My Pi: local providers without an API key (Ollama, LM Studio, …) can be saved
+- Oh My Pi: role entries this app cannot represent survive writes to `config.yml`
+
 ## [1.1.0] - 2026-09-21
 
 ### Added
