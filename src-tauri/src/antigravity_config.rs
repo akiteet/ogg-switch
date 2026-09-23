@@ -29,9 +29,15 @@ pub const AUTH_TYPE_OAUTH: &str = "oauth";
 
 /// 切换供应商时由 OGG Switch 全权托管的环境变量键。
 /// 受管语义：api-key 供应商 → upsert；oauth 供应商 → 全部删除。
-/// `GEMINI_MODEL` 纳入 live 快照，避免编辑当前供应商时默认模型被抹掉。
-pub const MANAGED_ENV_KEYS: [&str; 3] =
-    ["GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GEMINI_MODEL"];
+///
+/// 历史注记：`GEMINI_MODEL` 曾在此列（Gemini CLI 惯例），但 agy 从不读它——
+/// agy 的默认模型真源是 settings.json 的 `model` 字段（经 `settings_config.model`
+/// 走 `update_model`）。该键已移出受管集；api-key / oauth 切换时会显式清除
+/// legacy 残留。
+pub const MANAGED_ENV_KEYS: [&str; 2] = ["GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
+
+/// 已废弃的 legacy 键：不再写入，但切换时主动清除（老版本 OGG 写过它）。
+pub(crate) const LEGACY_ENV_KEYS: [&str; 1] = ["GEMINI_MODEL"];
 
 // ============================================================================
 // 路径
@@ -58,7 +64,7 @@ pub fn get_antigravity_token_path() -> PathBuf {
 }
 
 // ============================================================================
-// settings.json（只管 modelProvider 字段，其余字段原样保留）
+// settings.json（只管 modelProvider 与 model 两个键，其余字段原样保留）
 // ============================================================================
 
 fn read_settings_json() -> Value {
@@ -78,9 +84,12 @@ fn read_settings_json() -> Value {
         })
 }
 
-/// 设置 / 移除 settings.json 的 `modelProvider` 字段，保留文件中的其余字段。
-/// `None` 表示删除该字段（回落 Google OAuth 登录态）。
-pub fn update_model_provider(value: Option<&str>) -> Result<(), AppError> {
+/// 设置 / 移除 settings.json 的**单个字符串键**，保留文件中的其余字段。
+///
+/// `value = None` 表示删除该键；文件不存在且是删除操作时不凭空创建文件。
+/// `modelProvider` 与 `model` 都走这里——agy 的「当前模型」真源就是 settings.json
+/// 的 `model` 字段（agy 自己以显示名形式写入并读回，如 "Gemini 3.8 Flash (Low)"）。
+fn update_settings_string_key(key: &str, value: Option<&str>) -> Result<(), AppError> {
     let path = get_antigravity_settings_path();
 
     let (mut settings, existed) = if path.exists() {
@@ -95,13 +104,13 @@ pub fn update_model_provider(value: Option<&str>) -> Result<(), AppError> {
 
     let changed = match (value, settings.as_object_mut()) {
         (Some(v), Some(obj)) => {
-            let changed = obj.get("modelProvider").and_then(Value::as_str) != Some(v);
+            let changed = obj.get(key).and_then(Value::as_str) != Some(v);
             if changed {
-                obj.insert("modelProvider".to_string(), Value::String(v.to_string()));
+                obj.insert(key.to_string(), Value::String(v.to_string()));
             }
             changed
         }
-        (None, Some(obj)) => obj.remove("modelProvider").is_some(),
+        (None, Some(obj)) => obj.remove(key).is_some(),
         // settings.json 不是对象（损坏）：仅在需要写入新值时才覆盖重建
         (Some(_), None) => true,
         (None, None) => false,
@@ -116,6 +125,20 @@ pub fn update_model_provider(value: Option<&str>) -> Result<(), AppError> {
     }
 
     crate::config::write_json_file(&path, &settings)
+}
+
+/// 设置 / 移除 settings.json 的 `modelProvider` 字段，保留文件中的其余字段。
+/// `None` 表示删除该字段（回落 Google OAuth 登录态）。
+pub fn update_model_provider(value: Option<&str>) -> Result<(), AppError> {
+    update_settings_string_key("modelProvider", value)
+}
+
+/// 设置 / 移除 settings.json 的 `model` 字段（agy 启动时的默认模型）。
+///
+/// `None` 表示删除——**只在用户明确想回落 agy 自身选择时调用**；切换供应商的
+/// 常规路径里「未配置默认模型」应当保留 agy 里已有的 model 不动。
+pub fn update_model(value: Option<&str>) -> Result<(), AppError> {
+    update_settings_string_key("model", value)
 }
 
 // ============================================================================
@@ -667,7 +690,21 @@ pub(crate) fn compose_live_snapshot(
                 env.insert(key.to_string(), Value::String(value.to_string()));
             }
         }
-        return json!({ "authType": AUTH_TYPE_API_KEY, "env": Value::Object(env) });
+        // agy 当前模型（settings.json:model，agy 自己写显示名）随快照带出：
+        // EditProviderDialog 编辑当前供应商时会整体替换 settingsConfig，
+        // 不带这个字段的话表单会把已生效的默认模型显示成空。
+        let current_model = settings_json
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let mut snapshot = json!({ "authType": AUTH_TYPE_API_KEY, "env": Value::Object(env) });
+        if let Some(model) = current_model {
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert("model".to_string(), Value::String(model.to_string()));
+            }
+        }
+        return snapshot;
     }
 
     let mut snapshot = json!({ "authType": AUTH_TYPE_OAUTH });
@@ -792,10 +829,15 @@ pub(crate) fn write_antigravity_provider_live_with(
                 }
             }
 
-            // 1. 清 API key 痕迹 2. 恢复登录凭据（文件 / Windows 凭据管理器）
-            // 3. 摘掉 modelProvider 开关。官方条目（两者皆无）不接管 agy 自身登录态。
+            // 1. 清 API key 痕迹（含 legacy GEMINI_MODEL）2. 恢复登录凭据（文件 /
+            // Windows 凭据管理器）3. 摘掉 modelProvider 开关。官方条目（两者皆无）
+            // 不接管 agy 自身登录态。不动 settings.json 的 model——那是 agy 全局
+            // 偏好，不属于凭据面。
             for key in MANAGED_ENV_KEYS {
                 env_ops.remove(key)?;
+            }
+            for legacy in LEGACY_ENV_KEYS {
+                env_ops.remove(legacy)?;
             }
             let has_file_token =
                 token.is_some_and(|t| t.as_object().is_some_and(|obj| !obj.is_empty()));
@@ -828,9 +870,12 @@ pub(crate) fn write_antigravity_provider_live_with(
                 ));
             }
 
-            // 1. 全量 upsert env（默认模型/额外变量随供应商落持久环境变量；
-            //    空值 = 删除该键，仅 GOOGLE_GEMINI_BASE_URL 由专属字段控制）
-            // 2. 最后打开 modelProvider 开关
+            // 1. 全量 upsert env（额外变量随供应商落持久环境变量；
+            //    空值 = 删除该键，GOOGLE_GEMINI_BASE_URL 由专属字段控制）
+            // 2. legacy 清理：老版本 OGG 曾写 GEMINI_MODEL（agy 从不读它）
+            // 3. 默认模型写 settings.json 的 model（agy 的真源）；未配置则不动——
+            //    保留用户在 agy 里 /model 选过的值
+            // 4. 最后打开 modelProvider 开关
             let has_base_url = env
                 .and_then(|e| e.get("GOOGLE_GEMINI_BASE_URL"))
                 .and_then(Value::as_str)
@@ -856,14 +901,21 @@ pub(crate) fn write_antigravity_provider_live_with(
             if has_base_url.is_none() {
                 env_ops.remove("GOOGLE_GEMINI_BASE_URL")?;
             }
-            let has_model = env
-                .and_then(|e| e.get("GEMINI_MODEL"))
+            for legacy in LEGACY_ENV_KEYS {
+                env_ops.remove(legacy)?;
+            }
+
+            // 默认模型：settings_config 顶层的 model 字段（非 env！）
+            let configured_model = provider
+                .settings_config
+                .get("model")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            if has_model.is_none() {
-                env_ops.remove("GEMINI_MODEL")?;
+            if let Some(model) = configured_model {
+                update_model(Some(model))?;
             }
+
             update_model_provider(Some(MODEL_PROVIDER_API_KEY))?;
             Ok(())
         }
@@ -1353,6 +1405,175 @@ mod tests {
             std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
             std::fs::write(&token_path, "not-json").unwrap();
             assert!(read_token_file().is_err());
+        });
+    }
+
+    // ---- 默认模型（settings.json:model）----
+
+    #[test]
+    #[serial_test::serial]
+    fn update_model_preserves_other_fields() {
+        with_test_home(|_home| {
+            let path = get_antigravity_settings_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"modelProvider":"gemini","model":"Gemini 3.8 Flash (Low)","colorScheme":"dark"}"#,
+            )
+            .unwrap();
+
+            update_model(Some("Gemini 3.1 Pro (High)")).unwrap();
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                value.get("model").and_then(Value::as_str),
+                Some("Gemini 3.1 Pro (High)")
+            );
+            assert_eq!(
+                value.get("modelProvider").and_then(Value::as_str),
+                Some("gemini")
+            );
+            assert_eq!(value.get("colorScheme").and_then(Value::as_str), Some("dark"));
+
+            update_model(None).unwrap();
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(value.get("model").is_none());
+            assert_eq!(
+                value.get("modelProvider").and_then(Value::as_str),
+                Some("gemini")
+            );
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn api_key_switch_writes_model_and_clears_legacy_env() {
+        with_test_home(|home| {
+            // 预置 legacy 残留：老版本 OGG 写过 GEMINI_MODEL
+            let mem = MemEnv::new();
+            mem.set("GEMINI_MODEL", "gemini-3.1-pro-preview").unwrap();
+
+            let provider = provider_of(serde_json::json!({
+                "authType": "api-key",
+                // 顶层 model 字段（非 env！）
+                "model": "Gemini 3.8 Flash (Low)",
+                "env": { "GEMINI_API_KEY": "sk-test", "GOOGLE_GEMINI_BASE_URL": "https://relay.example.com" }
+            }));
+            write_antigravity_provider_live_with(&provider, &mem).unwrap();
+
+            // legacy env 键被清除
+            assert_eq!(mem.get("GEMINI_MODEL"), None);
+            assert_eq!(
+                mem.get("GEMINI_API_KEY").as_deref(),
+                Some("sk-test")
+            );
+
+            // settings.json：modelProvider 打开 + model 写入
+            let settings: Value = serde_json::from_str(
+                &std::fs::read_to_string(get_antigravity_settings_path()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                settings.get("modelProvider").and_then(Value::as_str),
+                Some("gemini")
+            );
+            assert_eq!(
+                settings.get("model").and_then(Value::as_str),
+                Some("Gemini 3.8 Flash (Low)")
+            );
+            let _ = home;
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn api_key_switch_without_model_keeps_existing_model() {
+        with_test_home(|_home| {
+            // agy 里已有用户自选的模型
+            let settings_path = get_antigravity_settings_path();
+            std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &settings_path,
+                r#"{"model":"Gemini 3.8 Flash (Low)"}"#,
+            )
+            .unwrap();
+
+            let mem = MemEnv::new();
+            let provider = provider_of(serde_json::json!({
+                "authType": "api-key",
+                "env": { "GEMINI_API_KEY": "sk-test" }
+            }));
+            write_antigravity_provider_live_with(&provider, &mem).unwrap();
+
+            // 未配置默认模型 → agy 里的选择原样保留
+            let settings: Value =
+                serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            assert_eq!(
+                settings.get("model").and_then(Value::as_str),
+                Some("Gemini 3.8 Flash (Low)")
+            );
+            assert_eq!(
+                settings.get("modelProvider").and_then(Value::as_str),
+                Some("gemini")
+            );
+        });
+    }
+
+    #[test]
+    fn snapshot_carries_current_model() {
+        let settings = serde_json::json!({
+            "modelProvider": "gemini",
+            "model": "Gemini 3.8 Flash (Low)"
+        });
+        let mut env = HashMap::new();
+        env.insert("GEMINI_API_KEY".to_string(), "sk-test".to_string());
+        let snapshot = compose_live_snapshot(&settings, &env, None);
+        assert_eq!(snapshot.get("authType").and_then(Value::as_str), Some("api-key"));
+        assert_eq!(
+            snapshot.get("model").and_then(Value::as_str),
+            Some("Gemini 3.8 Flash (Low)")
+        );
+
+        // 没写 model 的机器：快照不带该键（表单显示空 = 未配置）
+        let settings_no_model = serde_json::json!({ "modelProvider": "gemini" });
+        let snapshot = compose_live_snapshot(&settings_no_model, &env, None);
+        assert!(snapshot.get("model").is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn oauth_switch_clears_legacy_model_env_but_keeps_settings_model() {
+        with_test_home(|_home| {
+            let settings_path = get_antigravity_settings_path();
+            std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &settings_path,
+                r#"{"modelProvider":"gemini","model":"Gemini 3.8 Flash (Low)"}"#,
+            )
+            .unwrap();
+
+            let mem = MemEnv::new();
+            mem.set("GEMINI_MODEL", "legacy").unwrap();
+            mem.set("GEMINI_API_KEY", "sk-old").unwrap();
+
+            let provider = provider_of(serde_json::json!({
+                "authType": "oauth",
+                "token": { "access_token": "at", "refresh_token": "rt", "expiry": "2030-01-01T00:00:00Z" }
+            }));
+            write_antigravity_provider_live_with(&provider, &mem).unwrap();
+
+            // 凭据面：env 全清（含 legacy），modelProvider 摘掉
+            assert_eq!(mem.get("GEMINI_MODEL"), None);
+            assert_eq!(mem.get("GEMINI_API_KEY"), None);
+            let settings: Value =
+                serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+            assert!(settings.get("modelProvider").is_none());
+            // model 是 agy 全局偏好，不属于凭据面 → 不动
+            assert_eq!(
+                settings.get("model").and_then(Value::as_str),
+                Some("Gemini 3.8 Flash (Low)")
+            );
         });
     }
 }

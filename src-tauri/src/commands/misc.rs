@@ -191,6 +191,8 @@ pub async fn run_tool_lifecycle_action(
     if requested.is_empty() {
         return Err("No supported tools selected".to_string());
     }
+    let is_single_agy_update =
+        matches!(action, ToolLifecycleAction::Update) && requested == ["agy"];
 
     let label = match action {
         ToolLifecycleAction::Install => "tool_install",
@@ -205,7 +207,64 @@ pub async fn run_tool_lifecycle_action(
         run_tool_lifecycle_silently(&command_line, label)
     })
     .await
-    .map_err(|e| format!("tool lifecycle task join error: {e}"))?
+    .map_err(|e| format!("tool lifecycle task join error: {e}"))??;
+
+    // agy 更新的诚实性兜底：官方 installer 对已装机器是空操作（exit 0 不下载），
+    // `agy update` 也可能报成功却没真替换。命令链跑完后再复核一次版本——
+    // 仍落后于 manifest 时，由 OGG 直接按 manifest 下载覆盖。
+    // 其余工具 / 安装动作完全不受影响。
+    if is_single_agy_update {
+        run_agy_update_postcheck().await?;
+    }
+    Ok(())
+}
+
+/// `(agy, update)` 专属后置检查：命令链跑完后探一次本地版本，仍落后于
+/// release manifest 就走 manifest 覆盖安装。探不到本地版本（未安装 / 装坏）
+/// 时静默放行——那类状态由既有探测链路报错，不在这里猜。
+async fn run_agy_update_postcheck() -> Result<(), String> {
+    fn probe() -> Option<String> {
+        let exe = locate_agy_command().ok()?;
+        let output = std::process::Command::new(exe)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(extract_version(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    let local = probe();
+    let client = reqwest::Client::builder()
+        .timeout(LATEST_PROBE_TIMEOUT)
+        .build()
+        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+    let Some(entry) = fetch_agy_manifest_entry(&client).await else {
+        // manifest 不可达：无从覆盖，交给版本探测链路展示「最新版本未知」
+        return Ok(());
+    };
+    let behind = match local.as_deref() {
+        Some(local) => {
+            // 本地比 manifest 新（本地是预发布/内部构建）时不降级覆盖
+            compare_semver(local, &entry.version) == Some(std::cmp::Ordering::Less)
+        }
+        // 未装 / 装坏：命令链刚报了成功，说明 agy 自升级有输出但本地探不到，
+        // 交回既有探测链处理（那里有 installed_but_broken 的分类）
+        None => false,
+    };
+    if !behind {
+        return Ok(());
+    }
+    log::info!(
+        "agy 版本仍为 {local:?}，manifest 已是 {}，执行 manifest 覆盖安装",
+        entry.version
+    );
+    let target = locate_agy_command()?;
+    crate::commands::antigravity::force_update_agy_binary_with(&client, &entry, &target)
+        .await
+        .map(|_| ())
 }
 
 /// 静默执行工具安装/更新脚本：直接捕获子进程输出并阻塞到命令真正结束，
@@ -486,6 +545,23 @@ fn antigravity_install_windows_command() -> String {
         powershell_encoded_command(ANTIGRAVITY_INSTALL_WINDOWS_SCRIPT)
     )
 }
+
+/// agy 的更新链：先让 CLI 自升级（1.2.7+ 有 `update` 子命令），失败再回落官方 installer。
+///
+/// 为什么不直接重跑 installer：installer 脚本在 `agy.exe` 已存在时会打印「已安装，CLI 会
+/// 自行后台更新」然后 **exit 0 直接返回**（install.ps1 的 Pre-existence 分支），对已装好的
+/// 机器就是空操作——命令成功但版本不动。`agy update` 在已是最新时报
+/// `✓ You are already on the latest version.` 并以 exit 0 退出（实测），因此兜底只会在它
+/// 真正失败（非零退出）时触发。
+///
+/// Windows 侧不走 `chain_update_commands`：它会给 `||` 右侧加 `call`，而这里 fallback 是
+/// `powershell.exe`（不是 .cmd/.bat），不需要 `call` —— 与 `hermes_update_windows_command`、
+/// `grok_native_update_command` 同一约定。chain 语义（兜底触发、主命令成功即跳过、退出码传递）
+/// 已在 Windows 上用 cmd 批处理实测确认。
+#[cfg(target_os = "windows")]
+fn antigravity_update_windows_command() -> String {
+    format!("agy update || {}", antigravity_install_windows_command())
+}
 #[cfg(target_os = "windows")]
 const OMP_INSTALL_WINDOWS_SCRIPT: &str = "irm https://omp.sh/install.ps1 | iex";
 
@@ -619,7 +695,9 @@ fn tool_action_shell_command_for_shell(
         );
     }
 
-    // Antigravity CLI：官方 installer 安装（无 npm 包）；更新回落到官方 installer。
+    // Antigravity CLI：官方 installer 安装（无 npm 包）；更新优先 `agy update`，
+    // 失败才回落 installer（installer 对已安装机器是空操作，见
+    // `antigravity_update_windows_command` 的注释）。
     if tool == "agy" {
         return Some(
             match (action, shell) {
@@ -632,13 +710,12 @@ fn tool_action_shell_command_for_shell(
                 }
                 #[cfg(not(target_os = "windows"))]
                 (_, LifecycleCommandShell::WindowsBatch) => return None,
-                // 更新：官方未声明自升级子命令，直接重跑 installer。
                 (ToolLifecycleAction::Update, LifecycleCommandShell::Posix) => {
-                    return Some(ANTIGRAVITY_INSTALL_UNIX.to_string());
+                    return Some(format!("agy update || {ANTIGRAVITY_INSTALL_UNIX}"));
                 }
                 #[cfg(target_os = "windows")]
                 (ToolLifecycleAction::Update, LifecycleCommandShell::WindowsBatch) => {
-                    return Some(antigravity_install_windows_command());
+                    return Some(antigravity_update_windows_command());
                 }
             }
             .to_string(),
@@ -1130,30 +1207,35 @@ fn drop_latest_behind_local(latest: Option<String>, local_version: Option<&str>)
     (!local_leads).then_some(latest)
 }
 
-/// Hermes 的「最新版本」：GitHub Releases 为主，PyPI 兜底。
-///
-/// cc-switch 安装/升级 Hermes 走的是官方 install.sh（`git clone` main 分支）与
-/// `hermes update`（`git pull`），整条链路与 PyPI 无关；而 PyPI 的 `hermes-agent`
-/// 自 0.19.0（2026-07-20）起停更，上游只在 GitHub Releases 发版
-/// （#6475 / #6618 / #7033：「最新版本」长期停在 0.19.0、比当前还旧、升级按钮不出现）。
-/// 仅当 GitHub 不可达或被限流时才退到 PyPI，且该值已被本地超过时不展示，宁可显示未知。
-/// agy 没有 npm / GitHub Releases；官方安装脚本从自动更新服务的 release manifest
-/// 取版本，这里直接读同一份 manifest。
-async fn fetch_agy_latest_version(
-    client: &reqwest::Client,
-    local_version: Option<&str>,
-) -> Option<String> {
-    const MANIFEST_BASE: &str =
-        "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests";
-    let platforms: &[&str] = if cfg!(target_os = "windows") {
+/// agy 官方自动更新服务的 release manifest 基址（版本探测与二进制覆盖下载共用同一份）。
+pub(crate) const AGY_MANIFEST_BASE: &str =
+    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests";
+
+/// 当前平台在 manifest 里的候选键（按序取首个可用）。
+pub(crate) fn agy_manifest_platform_keys() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
         &["windows_amd64", "windows_arm64"]
     } else if cfg!(target_os = "macos") {
         &["darwin_arm64", "darwin_amd64"]
     } else {
         &["linux_amd64", "linux_arm64"]
-    };
-    for platform in platforms {
-        let url = format!("{MANIFEST_BASE}/{platform}.json");
+    }
+}
+
+/// manifest 条目：既有版本号，也有可下载的二进制地址与 sha512（覆盖安装用）。
+#[derive(Debug, Clone)]
+pub(crate) struct AgyManifestEntry {
+    pub version: String,
+    pub url: String,
+    pub sha512: String,
+}
+
+/// 拉取 agy 的 release manifest 条目（version / url / sha512 三者齐全才算有效）。
+pub(crate) async fn fetch_agy_manifest_entry(
+    client: &reqwest::Client,
+) -> Option<AgyManifestEntry> {
+    for platform in agy_manifest_platform_keys() {
+        let url = format!("{AGY_MANIFEST_BASE}/{platform}.json");
         let Ok(resp) = client.get(&url).timeout(LATEST_PROBE_TIMEOUT).send().await else {
             continue;
         };
@@ -1163,9 +1245,30 @@ async fn fetch_agy_latest_version(
         let Ok(json) = resp.json::<serde_json::Value>().await else {
             continue;
         };
-        if let Some(version) = json.get("version").and_then(|v| v.as_str()) {
-            return drop_latest_behind_local(Some(version.to_string()), local_version);
-        }
+        let (Some(version), Some(download), Some(sha512)) = (
+            json.get("version").and_then(|v| v.as_str()),
+            json.get("url").and_then(|v| v.as_str()),
+            json.get("sha512").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        return Some(AgyManifestEntry {
+            version: version.to_string(),
+            url: download.to_string(),
+            sha512: sha512.to_string(),
+        });
+    }
+    None
+}
+
+/// agy 没有 npm / GitHub Releases；官方安装脚本从自动更新服务的 release manifest
+/// 取版本，这里直接读同一份 manifest。
+async fn fetch_agy_latest_version(
+    client: &reqwest::Client,
+    local_version: Option<&str>,
+) -> Option<String> {
+    if let Some(entry) = fetch_agy_manifest_entry(client).await {
+        return drop_latest_behind_local(Some(entry.version), local_version);
     }
     drop_latest_behind_local(
         fetch_github_latest_version(client, "google-antigravity/antigravity-cli").await,
@@ -1173,6 +1276,13 @@ async fn fetch_agy_latest_version(
     )
 }
 
+/// Hermes 的「最新版本」：GitHub Releases 为主，PyPI 兜底。
+///
+/// cc-switch 安装/升级 Hermes 走的是官方 install.sh（`git clone` main 分支）与
+/// `hermes update`（`git pull`），整条链路与 PyPI 无关；而 PyPI 的 `hermes-agent`
+/// 自 0.19.0（2026-07-20）起停更，上游只在 GitHub Releases 发版
+/// （#6475 / #6618 / #7033：「最新版本」长期停在 0.19.0、比当前还旧、升级按钮不出现）。
+/// 仅当 GitHub 不可达或被限流时才退到 PyPI，且该值已被本地超过时不展示，宁可显示未知。
 async fn fetch_hermes_latest_version(
     client: &reqwest::Client,
     local_version: Option<&str>,
@@ -3252,6 +3362,51 @@ pub(crate) fn locate_omp_command() -> std::path::PathBuf {
             std::path::PathBuf::from("omp")
         }
     }
+}
+
+/// 定位 agy 可执行文件（**必须解析成功**）。
+///
+/// 与 `locate_omp_command` 的差别：那个允许回落裸命令名（只用于执行），而 manifest 覆盖
+/// 安装要拿到真实路径才能原子替换——回落成裸名字会把二进制写到当前工作目录，所以这里
+/// 找不到就报错，由调用方按「未安装」处理。
+pub(crate) fn locate_agy_command() -> Result<std::path::PathBuf, String> {
+    locate_default_tool("agy", None).map_err(|reason| {
+        let scanned: Vec<String> = build_tool_search_paths("agy")
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect();
+        log::warn!(
+            "agy CLI 定位失败（{reason}）。已扫描目录: {}",
+            scanned.join("; ")
+        );
+        format!("未找到 agy 可执行文件: {reason}")
+    })
+}
+
+/// manifest 覆盖安装后的收尾：跑一次 `agy install`（官方 installer 在复制二进制后
+/// 也会执行它，做 PATH 注册等环境配置）。失败只记录——二进制已就位，收尾缺了
+/// 不影响主功能（Windows 上安装脚本本来就把它放进 try/catch 吞掉软失败）。
+pub(crate) fn run_agy_install_setup(exe: &Path) -> Result<(), String> {
+    let output = std::process::Command::new(exe)
+        .arg("install")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("执行 agy install 失败: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    Err(format!(
+        "agy install 退出码 {:?}: {}",
+        output.status.code(),
+        detail.chars().take(200).collect::<String>()
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -6009,6 +6164,72 @@ mod tests {
                 infer_install_source(Path::new("C:\\Users\\me\\scoop\\shims\\codex.cmd")),
                 "scoop"
             );
+        }
+
+        #[test]
+        fn agy_install_uses_official_installer() {
+            // agy 无 npm 包，安装 = 官方 installer（antigravity.google/cli）
+            let posix = tool_action_shell_command_for_shell(
+                "agy",
+                ToolLifecycleAction::Install,
+                LifecycleCommandShell::Posix,
+            )
+            .unwrap();
+            assert!(
+                posix.starts_with("bash -c 'tmp=$(mktemp) && curl -fsSL https://antigravity.google/cli/install.sh")
+                    && posix.contains("install.sh -o $tmp && bash $tmp"),
+                "install should use the official script: {posix}"
+            );
+            #[cfg(target_os = "windows")]
+            {
+                let win = tool_action_shell_command_for_shell(
+                    "agy",
+                    ToolLifecycleAction::Install,
+                    LifecycleCommandShell::WindowsBatch,
+                )
+                .unwrap();
+                assert!(
+                    win.starts_with("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "),
+                    "windows install should be the encoded official script: {win}"
+                );
+            }
+        }
+
+        #[test]
+        fn agy_update_uses_cli_update_then_installer() {
+            // installer 对已安装机器是空操作（agy.exe 已存在 → exit 0 直接返回），
+            // 更新必须先跑 `agy update`（1.2.7+ 自升级子命令，实测已是最新时 exit 0
+            // 且不动二进制），失败才回落 installer。
+            let posix = tool_action_shell_command_for_shell(
+                "agy",
+                ToolLifecycleAction::Update,
+                LifecycleCommandShell::Posix,
+            )
+            .unwrap();
+            assert!(
+                posix.starts_with("agy update || bash -c 'tmp=$(mktemp) && curl -fsSL https://antigravity.google/cli/install.sh"),
+                "posix update should chain CLI update before installer: {posix}"
+            );
+
+            // Windows 链不含 `call powershell`：fallback 是 powershell.exe 而非 .cmd/.bat，
+            // 与 hermes/grok 的约定一致（call 只该给 .cmd/.bat 用）
+            #[cfg(target_os = "windows")]
+            {
+                let win = tool_action_shell_command_for_shell(
+                    "agy",
+                    ToolLifecycleAction::Update,
+                    LifecycleCommandShell::WindowsBatch,
+                )
+                .unwrap();
+                assert!(
+                    win.starts_with("agy update || powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "),
+                    "windows update should chain CLI update before installer: {win}"
+                );
+                assert!(
+                    !win.contains("call powershell"),
+                    "powershell.exe fallback must not be wrapped in call: {win}"
+                );
+            }
         }
     }
 

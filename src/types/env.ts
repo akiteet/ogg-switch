@@ -27,3 +27,31 @@ export interface BackupInfo {
   /** 被备份的环境变量冲突列表 */
   conflicts: EnvConflict[];
 }
+
+/**
+ * 恢复前的逐项对比结果（先看清「会把什么改成什么」再写入）
+ */
+export interface EnvRestoreEntry {
+  varName: string;
+  /** 备份里的值（恢复后会写入的值） */
+  backupValue: string;
+  /** 当前机器上的值；undefined = 当前未设置 */
+  currentValue?: string;
+  /** 当前值与备份值不同（恢复会覆盖现有值） */
+  differs: boolean;
+  /** 是否属于 OGG 受管键（影响 agy 认证） */
+  managed: boolean;
+}
+
+export interface EnvRestoreDiff {
+  backupPath: string;
+  timestamp: string;
+  entries: EnvRestoreEntry[];
+}
+
+/** 备份清单条目（不含具体值） */
+export interface EnvBackupSummary {
+  backupPath: string;
+  timestamp: string;
+  varNames: string[];
+}

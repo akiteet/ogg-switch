@@ -1346,6 +1346,7 @@ pub fn run() {
             commands::switch_provider,
             commands::import_default_config,
             commands::import_antigravity_from_live,
+            commands::antigravity_list_models,
             commands::list_antigravity_accounts,
             commands::switch_antigravity_account,
             commands::delete_antigravity_account,
@@ -1489,8 +1490,12 @@ pub fn run() {
             commands::import_from_deeplink_unified,
             update_tray_menu,
             // Environment variable management
+            commands::env_vars_in_use,
             commands::check_env_conflicts,
             commands::delete_env_vars,
+            commands::list_env_backups,
+            commands::read_env_backup,
+            commands::diff_env_backup,
             commands::restore_env_backup,
             // Skill management (v3.10.0+ unified)
             commands::get_installed_skills,

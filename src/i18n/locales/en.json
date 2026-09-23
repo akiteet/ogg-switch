@@ -195,8 +195,8 @@
         "baseUrlPlaceholder": "Gemini-compatible endpoint, leave empty for Google direct",
         "baseUrlHint": "agy only reads process environment variables: reopen your terminal / IDE after switching to pick up the new endpoint.",
         "defaultModelLabel": "Default model (optional)",
-        "defaultModelPlaceholder": "e.g. gemini-3-pro; leave empty to pick in agy via /model",
-        "defaultModelHint": "Writes the GEMINI_MODEL environment variable (Gemini CLI convention); agy has not officially documented reading it.",
+        "defaultModelPlaceholder": "e.g. Gemini 3.8 Flash (Low); leave empty to keep the model chosen in agy",
+        "defaultModelHint": "Writes the model field of the agy config (applied when this provider is switched to); use the button to fetch candidates from the agy catalog. Leave empty to keep the model currently selected in agy.",
         "extraEnvLabel": "Extra environment variables (optional)",
         "extraEnvHint": "One KEY=VALUE per line, written to persistent env on switch; empty value removes the variable.",
         "extraEnvInvalid": "Invalid extra env format: one KEY=VALUE per line; keys may contain letters, digits and underscores only"
@@ -2304,8 +2304,8 @@
   },
   "env": {
     "warning": {
-      "title": "Environment Variable Conflicts Detected",
-      "description": "Found {{count}} environment variables that may override your configuration"
+      "title": "Leftover Environment Variables Detected",
+      "description": "Found {{count}} AI-CLI-related environment variables that may override OGG Switch settings. Confirm they are not credentials of a provider you use before deleting. Variables managed by OGG itself (e.g. Antigravity's GEMINI_API_KEY) are not listed."
     },
     "actions": {
       "expand": "View Details",
@@ -2335,10 +2335,28 @@
       "title": "Confirm Delete Environment Variables",
       "message": "Are you sure you want to delete {{count}} environment variable(s)?",
       "backupNotice": "A backup will be created automatically before deletion. You can restore it later. Changes take effect after restarting the application or terminal.",
-      "confirm": "Confirm Delete"
+      "confirm": "Confirm Delete",
+      "inUse": "used by",
+      "notInUse": "not referenced by any OGG provider",
+      "inUseWarning": "Deleting it invalidates those providers (the card stays but stops working) — you will need to re-enter the API Key."
     },
     "error": {
       "noSelection": "Please select environment variables to delete"
+    },
+    "restore": {
+      "title": "Restore Environment Variable Backup",
+      "description": "Pick a backup and review the comparison below before restoring — restore overwrites the current value unconditionally.",
+      "loading": "Reading backups…",
+      "empty": "No environment variable backups",
+      "overrideWarning": "{{count}} variable(s) differ from the backup and will be overwritten.",
+      "backupValue": "Backup value",
+      "currentValue": "Current value",
+      "notSet": "not set",
+      "managed": "(managed by OGG)",
+      "confirm": "Restore",
+      "success": "Environment variables restored",
+      "error": "Failed to restore environment variables",
+      "listFailed": "Failed to read backups"
     }
   },
   "skills": {

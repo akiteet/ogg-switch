@@ -195,8 +195,8 @@
         "baseUrlPlaceholder": "Gemini 互換エンドポイント、空欄で Google 公式直接続",
         "baseUrlHint": "agy はプロセスの環境変数のみを読みます。切り替え後はターミナル / IDE を開き直してください。",
         "defaultModelLabel": "デフォルトモデル（任意）",
-        "defaultModelPlaceholder": "例: gemini-3-pro。空欄なら agy 内の /model で選択",
-        "defaultModelHint": "GEMINI_MODEL 環境変数へ書き込みます（Gemini CLI の慣例）。agy が参照するかは公式に明記されていません。",
+        "defaultModelPlaceholder": "例: Gemini 3.8 Flash (Low)。空欄なら agy で選択中のモデルを維持",
+        "defaultModelHint": "agy 設定の model フィールドに書き込みます（このプロバイダーへ切り替える際に適用）。右のボタンで agy カタログから候補を取得できます。空欄なら agy での選択を変更しません。",
         "extraEnvLabel": "追加環境変数（任意）",
         "extraEnvHint": "1 行に KEY=VALUE を1件ずつ。切り替え時に永続環境変数へ書き込み、空値で削除。",
         "extraEnvInvalid": "追加環境変数の書式エラー：1 行に KEY=VALUE。キーは英数字と _ のみ"
@@ -2304,8 +2304,8 @@
   },
   "env": {
     "warning": {
-      "title": "競合する環境変数を検出しました",
-      "description": "設定を上書きする可能性のある環境変数を {{count}} 件見つけました"
+      "title": "残留する環境変数を検出",
+      "description": "{{count}} 個の AI CLI 関連の環境変数が OGG Switch の設定を上書きする可能性があります。削除前に、使用中のプロバイダーの認証情報でないことを確認してください。OGG が管理する変数（Antigravity の GEMINI_API_KEY など）は一覧に表示されません。"
     },
     "actions": {
       "expand": "詳細を表示",
@@ -2335,10 +2335,28 @@
       "title": "環境変数を削除しますか？",
       "message": "{{count}} 件の環境変数を削除してもよろしいですか？",
       "backupNotice": "削除前に自動バックアップを作成します。後で復元できます。再起動またはターミナル再起動後に反映されます。",
-      "confirm": "削除を確認"
+      "confirm": "削除を確認",
+      "inUse": "以下のプロバイダーで使用中",
+      "notInUse": "OGG のプロバイダーからは未参照",
+      "inUseWarning": "削除すると該当プロバイダーの認証情報が無効になります（カードは残りますが動作しません）。API キーの再入力が必要です。"
     },
     "error": {
       "noSelection": "削除する環境変数を選択してください"
+    },
+    "restore": {
+      "title": "環境変数バックアップの復元",
+      "description": "バックアップを選び、以下の差分を確認してから復元してください。復元は現在の値を無条件に上書きします。",
+      "loading": "バックアップを読み込み中…",
+      "empty": "環境変数のバックアップはありません",
+      "overrideWarning": "{{count}} 件の変数はバックアップと値が異なり、上書きされます。",
+      "backupValue": "バックアップ値",
+      "currentValue": "現在の値",
+      "notSet": "未設定",
+      "managed": "（OGG が管理）",
+      "confirm": "復元",
+      "success": "環境変数を復元しました",
+      "error": "環境変数の復元に失敗しました",
+      "listFailed": "バックアップ一覧の読み込みに失敗しました"
     }
   },
   "skills": {

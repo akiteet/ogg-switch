@@ -195,8 +195,8 @@
         "baseUrlPlaceholder": "Gemini 相容端點，留空 = Google 官方直連",
         "baseUrlHint": "agy 只讀取行程環境變數：切換後需重開終端機 / IDE 才會讀到新端點。",
         "defaultModelLabel": "預設模型（選填）",
-        "defaultModelPlaceholder": "如 gemini-3-pro；留空 = 在 agy 內 /model 選擇",
-        "defaultModelHint": "寫入 GEMINI_MODEL 環境變數（Gemini CLI 慣例）；agy 未官方聲明讀取該變數，以實際為準。",
+        "defaultModelPlaceholder": "如 Gemini 3.8 Flash (Low)；留空 = 保留 agy 裡目前的選擇",
+        "defaultModelHint": "寫入 agy 設定的 model 欄位（切換至此供應商時生效）；點右側按鈕從 agy 目錄取得候選。留空則不動 agy 裡已選的模型。",
         "extraEnvLabel": "額外環境變數（選填）",
         "extraEnvHint": "每行一條 KEY=VALUE，隨切換寫入持久環境變數；清空該變數值即刪除。",
         "extraEnvInvalid": "額外環境變數格式錯誤：每行一條 KEY=VALUE，變數名只能含字母/數字/底線"
@@ -2305,8 +2305,8 @@
   },
   "env": {
     "warning": {
-      "title": "檢測到系統環境變數衝突",
-      "description": "發現 {{count}} 個環境變數可能會覆寫您的設定"
+      "title": "偵測到遺留的環境變數",
+      "description": "發現 {{count}} 個與 AI CLI 相關的環境變數，可能覆蓋 OGG Switch 的設定。請確認它們不是您在用的供應商憑證後再刪除。OGG 自身託管的變數（如 Antigravity 的 GEMINI_API_KEY）不在清單中。"
     },
     "actions": {
       "expand": "查看詳情",
@@ -2336,10 +2336,28 @@
       "title": "確認刪除環境變數",
       "message": "確定要刪除 {{count}} 個環境變數嗎？",
       "backupNotice": "刪除前將自動備份，您可以稍後還原。刪除後需要重新啟動應用程式或終端機才能生效。",
-      "confirm": "確認刪除"
+      "confirm": "確認刪除",
+      "inUse": "正在被以下供應商使用",
+      "notInUse": "未被 OGG 供應商引用",
+      "inUseWarning": "刪除後對應供應商的憑證會失效（卡片還在但無法使用），需要重新填寫 API Key。"
     },
     "error": {
       "noSelection": "請選擇要刪除的環境變數"
+    },
+    "restore": {
+      "title": "恢復環境變數備份",
+      "description": "選擇一份備份，先確認下面的比對再恢復——恢復會無條件覆蓋目前的值。",
+      "loading": "讀取備份…",
+      "empty": "暫無環境變數備份",
+      "overrideWarning": "{{count}} 個變數的目前值與備份不同，恢復後會被覆蓋。",
+      "backupValue": "備份值",
+      "currentValue": "目前值",
+      "notSet": "未設定",
+      "managed": "（OGG 受管）",
+      "confirm": "確認恢復",
+      "success": "環境變數已從備份恢復",
+      "error": "恢復環境變數失敗",
+      "listFailed": "讀取備份清單失敗"
     }
   },
   "skills": {

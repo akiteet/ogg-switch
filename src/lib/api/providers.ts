@@ -142,6 +142,17 @@ export const providersApi = {
     return await invoke("import_antigravity_from_live");
   },
 
+  /**
+   * agy 目录里的默认模型候选（`agy models`）。`name` 是 settings.json:model
+   * 实际存储的形式（显示名），`id` 仅供下拉展示辅助。未装 agy / 未配凭据时
+   * 返回空数组（表单保留手动输入兜底）。
+   */
+  async antigravityListModels(): Promise<
+    { name: string; id: string }[]
+  > {
+    return await invoke("antigravity_list_models");
+  },
+
   async listAntigravityAccounts(): Promise<AntigravityAccount[]> {
     return await invoke("list_antigravity_accounts");
   },

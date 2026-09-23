@@ -27,8 +27,8 @@ import {
 } from "@/config/antigravityProviderPresets";
 import { resolveProviderIcon } from "@/utils/providerIcon";
 import { ANTIGRAVITY_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
+import { providersApi } from "@/lib/api";
 import {
-  fetchModelsForConfig,
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
@@ -89,10 +89,10 @@ export function AntigravityProviderForm({
     return typeof env?.GEMINI_API_KEY === "string" ? env.GEMINI_API_KEY : "";
   });
   const [defaultModel, setDefaultModel] = useState(() => {
-    const env = initialData?.settingsConfig?.env as
-      | Record<string, unknown>
-      | undefined;
-    return typeof env?.GEMINI_MODEL === "string" ? env.GEMINI_MODEL : "";
+    // agy 默认模型的真源是 settings.json 的 model 字段（agy 自己以显示名写入），
+    // 不是环境变量——GEMINI_MODEL 是 Gemini CLI 的惯例，agy 从不读它。
+    const model = initialData?.settingsConfig?.model;
+    return typeof model === "string" ? model : "";
   });
   const [extraEnvText, setExtraEnvText] = useState(() => {
     const env = initialData?.settingsConfig?.env as
@@ -101,6 +101,7 @@ export function AntigravityProviderForm({
     const reserved = new Set([
       "GEMINI_API_KEY",
       "GOOGLE_GEMINI_BASE_URL",
+      // legacy：老版本 OGG 写过它，但 agy 从不读——不展示为额外变量，保存时被丢弃
       "GEMINI_MODEL",
     ]);
     return Object.entries(env ?? {})
@@ -174,7 +175,8 @@ export function AntigravityProviderForm({
     setIsOfficialOAuth(preset.authType === "oauth");
     setBaseUrl(preset.env?.GOOGLE_GEMINI_BASE_URL ?? "");
     setApiKey(preset.env?.GEMINI_API_KEY ?? "");
-    setDefaultModel(preset.env?.GEMINI_MODEL ?? "");
+    // 预设不携带默认模型（agy 的模型目录随版本变化）：切预设一律清空
+    setDefaultModel("");
     const presetReserved = new Set([
       "GEMINI_API_KEY",
       "GOOGLE_GEMINI_BASE_URL",
@@ -188,35 +190,34 @@ export function AntigravityProviderForm({
     );
   };
 
+  // 默认模型候选来自 agy 自己的目录（`agy models`），不走中转站的 /models——
+  // settings.json:model 的合法值由 agy 决定（显示名形式），两边不是一回事
   const handleFetchModels = useCallback(() => {
-    const endpoint =
-      baseUrl.trim().replace(/\/+$/, "") ||
-      "https://generativelanguage.googleapis.com/v1beta/openai";
-    if (!apiKey.trim()) {
-      showFetchModelsError(null, t, {
-        hasApiKey: false,
-        hasBaseUrl: true,
-      });
-      return;
-    }
     setIsFetchingModels(true);
-    fetchModelsForConfig(endpoint, apiKey.trim())
-      .then((models) => {
-        setFetchedModels(models);
-        if (models.length === 0) {
-          toast.info(t("providerForm.fetchModelsEmpty"));
+    providersApi
+      .antigravityListModels()
+      .then((catalog) => {
+        setFetchedModels(
+          catalog.map((entry) => ({ id: entry.name, ownedBy: "agy" })),
+        );
+        if (catalog.length === 0) {
+          toast.info(
+            t("provider.form.antigravity.modelListEmpty", {
+              defaultValue: "未能从 agy 获取模型目录（检查 agy 是否已安装并配好凭据）",
+            }),
+          );
         } else {
           toast.success(
-            t("providerForm.fetchModelsSuccess", { count: models.length }),
+            t("providerForm.fetchModelsSuccess", { count: catalog.length }),
           );
         }
       })
       .catch((err) => {
-        console.warn("[ModelFetch] Failed:", err);
+        console.warn("[AntigravityModelFetch] Failed:", err);
         showFetchModelsError(err, t);
       })
       .finally(() => setIsFetchingModels(false));
-  }, [apiKey, baseUrl, t]);
+  }, [t]);
 
   const parseExtraEnv = (text: string): Record<string, string> | null => {
     const entries: Record<string, string> = {};
@@ -288,15 +289,21 @@ export function AntigravityProviderForm({
     if (baseUrl.trim()) {
       env.GOOGLE_GEMINI_BASE_URL = baseUrl.trim().replace(/\/+$/, "");
     }
+    // 默认模型放顶层 model 字段（agy 的真源是 settings.json:model）；
+    // 留空不写 → 切换时后端保留 agy 里已有的选择
+    const config: Record<string, unknown> = {
+      authType: "api-key",
+      env,
+    };
     if (defaultModel.trim()) {
-      env.GEMINI_MODEL = defaultModel.trim();
+      config.model = defaultModel.trim();
     }
     await onSubmit({
       ...values,
       name,
       websiteUrl: values.websiteUrl?.trim() ?? "",
       notes: values.notes?.trim() ?? "",
-      settingsConfig: JSON.stringify({ authType: "api-key", env }),
+      settingsConfig: JSON.stringify(config),
       presetId: selectedPresetId ?? undefined,
       presetCategory: category ?? "custom",
       isPartner: false,
@@ -383,7 +390,7 @@ export function AntigravityProviderForm({
               </p>
             </div>
 
-            {/* 默认模型（GEMINI_MODEL）：agy 是否读取未经官方确认 */}
+            {/* 默认模型：写 agy 的 settings.json:model（agy 自己用显示名形式） */}
             <div className="space-y-2">
               <FormLabel htmlFor="antigravity-default-model">
                 {t("provider.form.antigravity.defaultModelLabel", {
@@ -398,7 +405,7 @@ export function AntigravityProviderForm({
                   "provider.form.antigravity.defaultModelPlaceholder",
                   {
                     defaultValue:
-                      "如 gemini-3-pro；留空 = 在 agy 内 /model 选择",
+                      "如 Gemini 3.8 Flash (Low)；留空 = 保留 agy 里当前的选择",
                   },
                 )}
                 fetchedModels={fetchedModels}
@@ -408,7 +415,7 @@ export function AntigravityProviderForm({
               <p className="text-xs text-muted-foreground">
                 {t("provider.form.antigravity.defaultModelHint", {
                   defaultValue:
-                    "写入 GEMINI_MODEL 环境变量（Gemini CLI 惯例）；agy 未官方声明读取该变量，以实际为准。",
+                    "写入 agy 配置的 model 字段（切到此供应商时生效）；点右侧按钮从 agy 目录获取候选。留空则不动 agy 里已选的模型。",
                 })}
               </p>
             </div>

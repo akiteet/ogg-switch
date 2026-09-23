@@ -4,7 +4,7 @@ import { AlertTriangle, ChevronDown, ChevronUp, X, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { EnvConflict } from "@/types/env";
-import { deleteEnvVars } from "@/lib/api/env";
+import { deleteEnvVars, envVarsInUse } from "@/lib/api/env";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -21,6 +21,17 @@ interface EnvWarningBannerProps {
   onDeleted: () => void;
 }
 
+/**
+ * OGG Switch 自己写入并托管的持久环境变量（与后端 env_checker 的排除集一致）。
+ * 这些键出现在注册表 / shell rc 里是正常工作状态（agy 等工具靠它们认证），
+ * 不是冲突——绝不能引导用户删除，否则等于删掉供应商凭据。
+ */
+const MANAGED_ENV_KEYS = new Set(["GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL"]);
+
+function isManagedEnvKey(name: string): boolean {
+  return MANAGED_ENV_KEYS.has(name.toUpperCase());
+}
+
 export function EnvWarningBanner({
   conflicts,
   onDismiss,
@@ -33,10 +44,35 @@ export function EnvWarningBanner({
   );
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  // 待删变量是否被 OGG 里配置的供应商引用（打开确认框时查询）
+  const [usage, setUsage] = useState<Map<string, string[]> | null>(null);
 
-  if (conflicts.length === 0) {
+  // 双保险：受管键不该出现在冲突清单里（后端已在源头排除），这里再滤一次，
+  // 防止旧版本残留数据把它们带回来误导用户删掉自己的供应商凭据
+  const reportable = conflicts.filter((c) => !isManagedEnvKey(c.varName));
+  if (reportable.length === 0) {
     return null;
   }
+
+  const selected = reportable.filter((c) =>
+    selectedConflicts.has(`${c.varName}:${c.sourcePath}`),
+  );
+
+  /** 打开删除确认前先查「这些变量是不是某供应商正在用的凭据」 */
+  const openConfirm = async () => {
+    setUsage(null);
+    setShowConfirmDialog(true);
+    try {
+      const names = selected.map((c) => c.varName);
+      const result = await envVarsInUse(names);
+      setUsage(new Map(Object.entries(result)));
+    } catch (error) {
+      console.warn("[EnvWarningBanner] 查询变量引用失败:", error);
+    }
+  };
+
+  const inUse = (name: string): string[] =>
+    usage?.get(name.toUpperCase()) ?? [];
 
   const toggleSelection = (key: string) => {
     const newSelection = new Set(selectedConflicts);
@@ -49,11 +85,11 @@ export function EnvWarningBanner({
   };
 
   const toggleSelectAll = () => {
-    if (selectedConflicts.size === conflicts.length) {
+    if (selectedConflicts.size === reportable.length) {
       setSelectedConflicts(new Set());
     } else {
       setSelectedConflicts(
-        new Set(conflicts.map((c) => `${c.varName}:${c.sourcePath}`)),
+        new Set(reportable.map((c) => `${c.varName}:${c.sourcePath}`)),
       );
     }
   };
@@ -63,7 +99,8 @@ export function EnvWarningBanner({
     setIsDeleting(true);
 
     try {
-      const conflictsToDelete = conflicts.filter((c) =>
+      // 用过滤后的清单，避免把受管键/已剔除条目带进删除请求
+      const conflictsToDelete = reportable.filter((c) =>
         selectedConflicts.has(`${c.varName}:${c.sourcePath}`),
       );
 
@@ -84,6 +121,7 @@ export function EnvWarningBanner({
 
       // 清空选择并通知父组件
       setSelectedConflicts(new Set());
+      setUsage(null);
       onDeleted();
     } catch (error) {
       console.error("删除环境变量失败:", error);
@@ -123,7 +161,7 @@ export function EnvWarningBanner({
                     {t("env.warning.title")}
                   </h3>
                   <p className="text-sm text-yellow-800 dark:text-yellow-200 mt-0.5">
-                    {t("env.warning.description", { count: conflicts.length })}
+                    {t("env.warning.description", { count: reportable.length })}
                   </p>
                 </div>
 
@@ -163,7 +201,7 @@ export function EnvWarningBanner({
                   <div className="flex items-center gap-2 pb-2 border-b border-yellow-200 dark:border-yellow-900/50">
                     <Checkbox
                       id="select-all"
-                      checked={selectedConflicts.size === conflicts.length}
+                      checked={selectedConflicts.size === reportable.length}
                       onCheckedChange={toggleSelectAll}
                     />
                     <label
@@ -175,7 +213,7 @@ export function EnvWarningBanner({
                   </div>
 
                   <div className="max-h-96 overflow-y-auto space-y-2">
-                    {conflicts.map((conflict) => {
+                    {reportable.map((conflict) => {
                       const key = `${conflict.varName}:${conflict.sourcePath}`;
                       return (
                         <div
@@ -222,7 +260,7 @@ export function EnvWarningBanner({
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={() => setShowConfirmDialog(true)}
+                      onClick={() => void openConfirm()}
                       disabled={selectedConflicts.size === 0 || isDeleting}
                       className="gap-1"
                     >
@@ -252,6 +290,43 @@ export function EnvWarningBanner({
               <p>
                 {t("env.confirm.message", { count: selectedConflicts.size })}
               </p>
+              {/* 关键安全提示：这些变量可能正是某个供应商条目里存的凭据 */}
+              {selected.length > 0 && (
+                <div className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-2">
+                  {selected.map((c) => {
+                    const users = inUse(c.varName);
+                    return (
+                      <div key={`${c.varName}:${c.sourcePath}`} className="text-sm">
+                        <span className="font-medium">{c.varName}</span>
+                        {users.length > 0 ? (
+                          <span className="text-destructive">
+                            {" "}
+                            {t("env.confirm.inUse", {
+                              defaultValue: "正在被以下供应商使用",
+                            })}
+                            ：{users.join("、")}
+                          </span>
+                        ) : usage ? (
+                          <span className="text-muted-foreground">
+                            {" "}
+                            {t("env.confirm.notInUse", {
+                              defaultValue: "未被 OGG 供应商引用",
+                            })}
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  {usage && selected.some((c) => inUse(c.varName).length > 0) && (
+                    <p className="text-sm text-destructive">
+                      {t("env.confirm.inUseWarning", {
+                        defaultValue:
+                          "删除后对应供应商的凭据会失效（卡片还在但用不了），需要重新填写 API Key。",
+                      })}
+                    </p>
+                  )}
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">
                 {t("env.confirm.backupNotice")}
               </p>

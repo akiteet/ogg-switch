@@ -16,6 +16,7 @@ import {
   ScrollText,
   HardDriveDownload,
   FlaskConical,
+  RotateCcw,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -44,6 +45,7 @@ import { TerminalSettings } from "@/components/settings/TerminalSettings";
 import { DirectorySettings } from "@/components/settings/DirectorySettings";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { BackupListSection } from "@/components/settings/BackupListSection";
+import { EnvRestoreDialog } from "@/components/env/EnvRestoreDialog";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { ProxyTabContent } from "@/components/settings/ProxyTabContent";
@@ -108,6 +110,7 @@ export function SettingsPage({
 
   const [activeTab, setActiveTab] = useState<string>("general");
   const [showRestartPrompt, setShowRestartPrompt] = useState(false);
+  const [envRestoreOpen, setEnvRestoreOpen] = useState(false);
   const tabScrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -421,6 +424,44 @@ export function SettingsPage({
                         </AccordionContent>
                       </AccordionItem>
 
+                      {/* 环境变量备份：与上面的数据库备份是两套东西（删冲突变量时生成） */}
+                      <AccordionItem
+                        value="envBackup"
+                        className="rounded-xl glass-card overflow-hidden"
+                      >
+                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <RotateCcw className="h-5 w-5 text-amber-500" />
+                            <div className="text-left">
+                              <h3 className="text-base font-semibold">
+                                {t("settings.advanced.envBackup.title", {
+                                  defaultValue: "环境变量备份",
+                                })}
+                              </h3>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                {t("settings.advanced.envBackup.description", {
+                                  defaultValue:
+                                    "删除冲突环境变量时自动生成的备份，可对比后恢复",
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1"
+                            onClick={() => setEnvRestoreOpen(true)}
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                            {t("settings.advanced.envBackup.open", {
+                              defaultValue: "查看与恢复",
+                            })}
+                          </Button>
+                        </AccordionContent>
+                      </AccordionItem>
+
                       <AccordionItem
                         value="cloudSync"
                         className="rounded-xl glass-card overflow-hidden"
@@ -574,6 +615,11 @@ export function SettingsPage({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <EnvRestoreDialog
+        open={envRestoreOpen}
+        onOpenChange={setEnvRestoreOpen}
+      />
     </div>
   );
 }
