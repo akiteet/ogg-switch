@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-23
+
+### Added
+
+- Settings → Advanced → "Environment variable backups": list the backups that are
+  created when environment variables are deleted, compare each variable's backed-up
+  value against the value currently on the machine, and restore them. This used to be
+  a backend call with no UI at all, so a backup could be written but never used
+
+### Fixed
+
+- Environment variable conflict check no longer flags the variables OGG Switch itself
+  manages. `GEMINI_API_KEY` / `GOOGLE_GEMINI_BASE_URL` are written by OGG when
+  switching Antigravity providers — they are how agy authenticates — so listing them
+  as "conflicts" with a delete button was inviting users to delete their own provider
+  credentials. They are now excluded from the scan (including OGG's managed block in
+  shell rc files) and rejected by the delete path itself; the banner explains what is
+  managed and what is genuinely leftover
+- Environment variable deletion now warns before it happens when a selected variable
+  is the credential of a provider configured in OGG (it would silently stop working),
+  and a delete that includes a managed variable is refused outright instead of
+  partially succeeding. The backup file is only written after validation passes
+- Antigravity CLI: "Upgrade" actually updates the CLI now. The official install script
+  exits successfully without touching an existing binary, and agy's own `update`
+  subcommand was not being used; the update flow now runs `agy update` first and, if
+  the version still trails the official release manifest, downloads and verifies the
+  latest binary (sha512) and replaces it directly
+- Antigravity CLI: the provider form's default model is now honored. It used to be
+  written to a `GEMINI_MODEL` environment variable that agy never reads; it is stored
+  in agy's own config (`settings.json` → `model`) and applied when switching to the
+  provider. Leaving it empty keeps whatever model is currently selected in agy. The
+  candidate list comes from `agy models` (display names, as agy stores them), and the
+  obsolete environment variable is cleaned up on the next provider switch
+
 ## [1.1.1] - 2026-09-22
 
 ### Added
