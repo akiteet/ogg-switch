@@ -394,14 +394,21 @@ export function useDeleteModelPricing() {
 /**
  * OMP 配额窗口（`~/.omp/agent/agent.db:usage_history`）的共享 hook。
  *
- * 卡片（`OmpQuotaFooter`）与用量看板提示（`UsageHero`）共用同一份缓存
- * （queryKey `["ompQuotaWindows"]`），避免同一数据被两处各自拉取。
+ * 卡片（`OmpQuotaFooter`）与用量看板提示（`UsageHero`）共用同一份缓存，
+ * 避免同一数据被两处各自拉取。
+ *
+ * 刷新策略：queryKey 前缀必须落在 `usageKeys.all` 之下——后端会话同步
+ * （60s 一轮）与 `usage-log-recorded` 事件的失效都按该前缀广播，key 游离在
+ * 命名空间外会永远收不到（曾经「卡片数字永远停在首次读取」的根因）。再叠加
+ * 60s 轮询，与后端同步节奏对齐。
  */
 export function useOmpQuotaWindows(options?: { enabled?: boolean }) {
   return useQuery({
-    queryKey: ["ompQuotaWindows"],
+    queryKey: [...usageKeys.all, "ompQuotaWindows"],
     queryFn: () => usageApi.getOmpQuotaWindows(),
     enabled: options?.enabled ?? true,
     staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   });
 }

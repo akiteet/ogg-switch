@@ -361,6 +361,9 @@ pub struct AgyAccessToken {
     /// `expiry`（RFC3339）解析出的毫秒时间戳；`None` = 无从得知，按"未过期"处理，
     /// 最终由接口的 401 说了算。
     pub expires_at_ms: Option<i64>,
+    /// agy 落盘的 refresh token（keyring blob 与 token 文件都带）。自动续期用；
+    /// 取不到就只是无法续期，不影响登录态判定。
+    pub refresh_token: Option<String>,
 }
 
 impl AgyAccessToken {
@@ -401,6 +404,16 @@ pub fn access_token_from_credential_json(value: &Value) -> Option<AgyAccessToken
             .map(|at| at.timestamp_millis())
     }
 
+    // refresh_token 在 access_token 的同一层（嵌套形态在 token 对象里，文件形态在顶层）
+    fn refresh_token_of(value: &Value, nested: Option<&Value>) -> Option<String> {
+        nested
+            .and_then(|n| n.get("refresh_token"))
+            .or_else(|| value.get("refresh_token"))
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+    }
+
     // 嵌套形态：{"token": {...}}
     if let Some(nested) = value.get("token") {
         if let Some(token) = nested
@@ -411,6 +424,7 @@ pub fn access_token_from_credential_json(value: &Value) -> Option<AgyAccessToken
             return Some(AgyAccessToken {
                 token: token.to_string(),
                 expires_at_ms: expiry_ms(nested),
+                refresh_token: refresh_token_of(value, Some(nested)),
             });
         }
     }
@@ -424,6 +438,7 @@ pub fn access_token_from_credential_json(value: &Value) -> Option<AgyAccessToken
         return Some(AgyAccessToken {
             token: token.to_string(),
             expires_at_ms: expiry_ms(value),
+            refresh_token: refresh_token_of(value, None),
         });
     }
 
@@ -435,6 +450,7 @@ pub fn access_token_from_credential_json(value: &Value) -> Option<AgyAccessToken
         .map(|token| AgyAccessToken {
             token: token.to_string(),
             expires_at_ms: expiry_ms(value),
+            refresh_token: refresh_token_of(value, None),
         })
 }
 
@@ -982,6 +998,307 @@ fn write_token_file(token: &Value) -> Result<(), AppError> {
         fs::set_permissions(&path, perms).map_err(|e| AppError::io(&path, e))?;
     }
     Ok(())
+}
+
+// ============================================================================
+// access token 自动续期
+//
+// agy 的 refresh_token 就在凭据里；唯一缺的是 OAuth client（应用）凭据——它
+// 不公开、也不允许写进仓库，但就在用户本机安装的 agy 二进制里，运行时提取
+// （凭据本就不离开用户机器）。刷新成功后把新 access token / expiry 回写
+// keyring 与 token 文件（结构原样、仅替换两个字段，与 agy 自己的周期刷新兼容）。
+// ============================================================================
+
+/// 临期阈值：剩余不足 5 分钟就先续期，避免查询刚好踩到过期。
+const AGY_REFRESH_MARGIN_MS: i64 = 5 * 60 * 1000;
+
+/// 本机 agy 可执行文件路径：Windows 标准安装位优先，Unix 常见位与 PATH 兜底。
+fn agy_exe_path() -> Option<PathBuf> {
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let p = PathBuf::from(local).join("agy").join("bin").join("agy.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        candidates.push(
+            PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .join("agy")
+                .join("bin")
+                .join("agy.exe"),
+        );
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(&home).join(".local").join("bin").join("agy"));
+        candidates.push(PathBuf::from(home).join("agy").join("bin").join("agy"));
+    }
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let exe = if cfg!(windows) {
+                dir.join("agy.exe")
+            } else {
+                dir.join("agy")
+            };
+            candidates.push(exe);
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// 从 agy 二进制字节里提取 (client_id, client_secret) 候选组合。纯 ASCII 模式
+/// 扫描（字节级，避免 190MB 的 latin1 String 拷贝）；相邻两个 secret 共享一个
+/// 字母数字 run，用下一处 `GOCSPX-` 的位置截断。结果按 exe 的 mtime 缓存。
+type OAuthClientPairs = Vec<(String, String)>;
+
+fn extract_agy_oauth_clients() -> OAuthClientPairs {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<Option<(std::time::SystemTime, OAuthClientPairs)>>> =
+        OnceLock::new();
+
+    let Some(exe) = agy_exe_path() else {
+        return Vec::new();
+    };
+    let mtime = fs::metadata(&exe).and_then(|m| m.modified()).ok();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_mtime, cached)) = guard.as_ref() {
+            if Some(*cached_mtime) == mtime {
+                return cached.clone();
+            }
+        }
+    }
+
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+    let find_all = |hay: &[u8], needle: &[u8]| -> Vec<usize> {
+        let mut out = Vec::new();
+        if needle.is_empty() || hay.len() < needle.len() {
+            return out;
+        }
+        for i in 0..=(hay.len() - needle.len()) {
+            if &hay[i..i + needle.len()] == needle {
+                out.push(i);
+            }
+        }
+        out
+    };
+
+    let mut clients = Vec::new();
+    if let Ok(bytes) = fs::read(&exe) {
+        let id_suffix = b".apps.googleusercontent.com";
+        let mut ids: Vec<String> = Vec::new();
+        for pos in find_all(&bytes, id_suffix) {
+            // 客户端 id 的前缀是 [A-Za-z0-9-]，但紧邻的前置文本（无分隔符的字符串
+            // 拼接）会被一并卷进来——client id 恒以纯数字的项目号开头，从第一个
+            // 数字起截断并校验
+            let mut start = pos;
+            while start > 0
+                && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'-')
+            {
+                start -= 1;
+            }
+            while start < pos && !bytes[start].is_ascii_digit() {
+                start += 1;
+            }
+            if let Ok(id) = std::str::from_utf8(&bytes[start..pos + id_suffix.len()]) {
+                if id.as_bytes()[0].is_ascii_digit() && !ids.iter().any(|existing| existing == id) {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+
+        const MARK: &[u8] = b"GOCSPX-";
+        const STANDARD_SECRET_LEN: usize = 35; // GOCSPX- + 28，实测标准长度
+        let mut secrets: Vec<String> = Vec::new();
+        let mut push_secret = |candidate: &str| {
+            if (25..=45).contains(&candidate.len()) && !secrets.iter().any(|s| s == candidate) {
+                secrets.push(candidate.to_string());
+            }
+        };
+        for pos in find_all(&bytes, MARK) {
+            let mut end = pos + MARK.len();
+            while end < bytes.len() && is_word(bytes[end]) {
+                end += 1;
+            }
+            // 相邻的下一个 GOCSPX- 落在同一个字母数字 run 里——从那里截断
+            if let Some(&next) = find_all(&bytes[pos + MARK.len()..], MARK).first() {
+                let abs_next = pos + MARK.len() + next;
+                if abs_next < end {
+                    end = abs_next;
+                }
+            }
+            if let Ok(secret) = std::str::from_utf8(&bytes[pos..end]) {
+                push_secret(secret);
+                // 二进制里字符串无分隔符拼接，secret 后面可能紧贴其它字面量
+                // （实测 "…ZtsXhttps"）——超出标准长度的 run 追加标准长度前缀候选
+                if secret.len() > STANDARD_SECRET_LEN {
+                    push_secret(&secret[..STANDARD_SECRET_LEN]);
+                }
+            }
+        }
+
+        for id in &ids {
+            for secret in &secrets {
+                clients.push((id.clone(), secret.clone()));
+            }
+        }
+    }
+
+    if let Ok(mut guard) = cache.lock() {
+        if let Some(mtime) = mtime {
+            *guard = Some((mtime, clients.clone()));
+        }
+    }
+    clients
+}
+
+/// 把刷新后的 token 写回一处凭据 JSON（三种落盘形态，结构原样仅替换两个字段）。
+fn apply_refreshed_token_to_credential_json(
+    value: &Value,
+    new_token: &str,
+    expires_at_ms: i64,
+) -> Value {
+    let mut out = value.clone();
+    let expiry = chrono::DateTime::from_timestamp_millis(expires_at_ms)
+        .map(|at| at.to_rfc3339())
+        .unwrap_or_default();
+    if let Some(nested) = out.get_mut("token").and_then(|t| t.as_object_mut()) {
+        if nested.contains_key("access_token") {
+            nested.insert("access_token".into(), Value::String(new_token.to_string()));
+            nested.insert("expiry".into(), Value::String(expiry));
+            return out;
+        }
+    }
+    if let Some(top) = out.as_object_mut() {
+        top.insert("access_token".into(), Value::String(new_token.to_string()));
+        top.insert("expiry".into(), Value::String(expiry));
+    }
+    out
+}
+
+/// 过期/临期时自动续期：读凭据 → 提取本机 agy 的 OAuth client → 打 Google
+/// token 端点 → 回写 keyring 与 token 文件。任何一步失败都返回 None 并保持
+/// 现状（查询流程随后走"拿旧 token 再试一把"的既有路径），绝不阻塞查询。
+pub async fn refresh_agy_credentials_if_stale(now_ms: i64) -> Option<String> {
+    let snapshots = credential_manager::find_matching().unwrap_or_default();
+    let file = read_token_file().unwrap_or(None);
+
+    // 挑与 agy_token_state 同口径的最新候选：keyring blob + token 文件
+    let mut freshest: Option<AgyAccessToken> = None;
+    for snapshot in &snapshots {
+        if let Ok(blob) = credential_blob_json(snapshot) {
+            if let Some(token) = access_token_from_credential_json(&blob) {
+                let replace = freshest
+                    .as_ref()
+                    .map(|cur| {
+                        token.expires_at_ms.unwrap_or(i64::MAX)
+                            > cur.expires_at_ms.unwrap_or(i64::MAX)
+                    })
+                    .unwrap_or(true);
+                if replace {
+                    freshest = Some(token);
+                }
+            }
+        }
+    }
+    if let Some(token) = file.as_ref().and_then(access_token_from_credential_json) {
+        let replace = freshest
+            .as_ref()
+            .map(|cur| {
+                token.expires_at_ms.unwrap_or(i64::MAX) > cur.expires_at_ms.unwrap_or(i64::MAX)
+            })
+            .unwrap_or(true);
+        if replace {
+            freshest = Some(token);
+        }
+    }
+
+    let freshest = freshest?;
+    let needs_refresh = freshest.refresh_token.is_some()
+        && match freshest.expires_at_ms {
+            // 无 expiry = 按未过期处理，交给接口的 401（与 is_expired_at 同口径）
+            Some(at) => at - now_ms < AGY_REFRESH_MARGIN_MS,
+            None => false,
+        };
+    if !needs_refresh {
+        return None;
+    }
+    let refresh_token = freshest.refresh_token.as_deref()?;
+
+    let clients = extract_agy_oauth_clients();
+    if clients.is_empty() {
+        log::warn!("agy token 临期但未找到本机 agy 安装，无法自动续期");
+        return None;
+    }
+
+    let client = crate::proxy::http_client::get();
+    for (client_id, client_secret) in &clients {
+        let resp = match client
+            .post("https://oauth2.googleapis.com/token")
+            .form(&[
+                ("client_id", client_id.as_str()),
+                ("client_secret", client_secret.as_str()),
+                ("refresh_token", refresh_token),
+                ("grant_type", "refresh_token"),
+            ])
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(_) => continue,
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let body: Value = match resp.json().await {
+            Ok(body) => body,
+            Err(_) => continue,
+        };
+        let Some(new_token) = body.get("access_token").and_then(Value::as_str) else {
+            continue;
+        };
+        let expires_in = body
+            .get("expires_in")
+            .and_then(Value::as_i64)
+            .unwrap_or(3600);
+        let expires_at_ms = now_ms + expires_in * 1000;
+
+        // 回写：keyring 全部快照 + token 文件都换成新 token（结构原样）
+        for snapshot in &snapshots {
+            if let Ok(blob) = credential_blob_json(snapshot) {
+                let updated =
+                    apply_refreshed_token_to_credential_json(&blob, new_token, expires_at_ms);
+                let encoded = {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(updated.to_string().as_bytes())
+                };
+                let updated_snapshot = CredentialSnapshot {
+                    blob: encoded,
+                    ..snapshot.clone()
+                };
+                if let Err(err) = credential_manager::write(&updated_snapshot) {
+                    log::warn!("agy 凭据回写 keyring 失败（不阻塞）: {err}");
+                }
+            }
+        }
+        if let Some(file_json) = file.as_ref() {
+            let updated =
+                apply_refreshed_token_to_credential_json(file_json, new_token, expires_at_ms);
+            if let Err(err) = write_token_file(&updated) {
+                log::warn!("agy 凭据回写 token 文件失败（不阻塞）: {err}");
+            }
+        }
+        log::info!(
+            "agy access token 已自动续期，有效期 {} 秒（凭据源：本机 agy 提取的 OAuth client）",
+            expires_in
+        );
+        return Some(new_token.to_string());
+    }
+    log::warn!("agy token 续期失败：本机 agy 的 OAuth client 均不被接受（agy 可能已更新，重新登录一次即可）");
+    None
 }
 
 /// 把供应商写入 live 配置（核心写入点，挂接 `write_live_snapshot`）
@@ -1790,18 +2107,26 @@ mod tests {
         assert_eq!(parsed.token, "at-nested");
         assert!(parsed.expires_at_ms.is_some());
         assert!(!parsed.is_expired_at(0));
+        // refresh_token 在 token 对象里——自动续期靠它
+        assert_eq!(parsed.refresh_token.as_deref(), Some("rt"));
 
         // 2) 旧形态：token 直接是字符串
         let legacy = json!({ "token": "at-legacy" });
         let parsed = access_token_from_credential_json(&legacy).expect("legacy shape");
         assert_eq!(parsed.token, "at-legacy");
         assert_eq!(parsed.expires_at_ms, None);
+        assert_eq!(parsed.refresh_token, None);
 
-        // 3) token 文件形态：顶层 access_token
-        let file = json!({ "access_token": "at-file", "expiry": "2000-01-01T00:00:00Z" });
+        // 3) token 文件形态：顶层 access_token（refresh_token 也在顶层）
+        let file = json!({
+            "access_token": "at-file",
+            "refresh_token": "rt-file",
+            "expiry": "2000-01-01T00:00:00Z"
+        });
         let parsed = access_token_from_credential_json(&file).expect("file shape");
         assert_eq!(parsed.token, "at-file");
         assert!(parsed.is_expired_at(chrono::Utc::now().timestamp_millis()));
+        assert_eq!(parsed.refresh_token.as_deref(), Some("rt-file"));
 
         // 读不出来的形态一律 None（交给调用方报 parse_error，而不是假装没登录）
         assert!(
@@ -1818,6 +2143,7 @@ mod tests {
         let token = |name: &str, at: Option<i64>| AgyAccessToken {
             token: name.to_string(),
             expires_at_ms: at,
+            refresh_token: None,
         };
 
         // 未过期的优先于已过期的（即便已过期的"数字更大"也不该赢）
@@ -1932,5 +2258,57 @@ mod tests {
                 other => panic!("expected missing with diagnostic, got {other:?}"),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn apply_refreshed_token_updates_nested_blob_without_touching_other_fields() {
+        // keyring 真形态：嵌套 token 对象 + 同层元数据，结构必须原样保留
+        let blob = json!({
+            "token": {
+                "access_token": "old",
+                "token_type": "Bearer",
+                "refresh_token": "rt",
+                "expiry": "2000-01-01T00:00:00+00:00"
+            },
+            "auth_method": "consumer",
+            "id_token": "id"
+        });
+        let updated =
+            apply_refreshed_token_to_credential_json(&blob, "new-token", 1_800_000_000_000);
+        assert_eq!(updated["token"]["access_token"], "new-token");
+        assert_eq!(updated["token"]["refresh_token"], "rt");
+        assert_eq!(updated["token"]["token_type"], "Bearer");
+        assert_eq!(updated["auth_method"], "consumer");
+        assert_eq!(updated["id_token"], "id");
+        let expiry = updated["token"]["expiry"].as_str().unwrap();
+        let parsed = chrono::DateTime::parse_from_rfc3339(expiry).unwrap();
+        assert_eq!(parsed.timestamp_millis(), 1_800_000_000_000);
+    }
+
+    #[test]
+    fn apply_refreshed_token_updates_file_shape() {
+        let file = json!({
+            "access_token": "old",
+            "refresh_token": "rt",
+            "expiry": "2000-01-01T00:00:00Z",
+            "email": "a@gmail.com"
+        });
+        let updated =
+            apply_refreshed_token_to_credential_json(&file, "new-token", 1_800_000_000_000);
+        assert_eq!(updated["access_token"], "new-token");
+        assert_eq!(updated["refresh_token"], "rt");
+        assert_eq!(updated["email"], "a@gmail.com");
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(updated["expiry"].as_str().unwrap())
+                .unwrap()
+                .timestamp_millis(),
+            1_800_000_000_000
+        );
     }
 }

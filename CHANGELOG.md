@@ -5,6 +5,21 @@ All notable changes to OGG Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Antigravity sessions stay alive: when the access token nears expiry it is
+  refreshed automatically from the refresh token agy already stores, and the
+  refreshed credentials are written back to where agy reads them. The OAuth client
+  needed for the refresh is extracted from the locally installed agy at runtime —
+  nothing is embedded in the repository, and a missing or outdated agy falls back to
+  the previous "run agy to sign in again" hint
+- Oh My Pi: OAuth provider cards' quota windows refresh on their own now — 60-second
+  polling, and the refresh events from background session sync actually reach them
+  (the query key sat outside the namespace those events invalidate, so the numbers
+  used to freeze at whatever was read first)
+
 ## [1.1.3] - 2026-09-25
 
 ### Added

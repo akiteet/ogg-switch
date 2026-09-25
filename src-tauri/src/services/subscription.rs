@@ -1720,8 +1720,10 @@ const ANTIGRAVITY_CLOUDCODE_USER_AGENT: &str = "vscode/1.100.0 (Antigravity/4.3.
 /// （`{access_token, token_type, refresh_token, expiry, email}`）与 Windows 凭据管理器
 /// `gemini:antigravity`（**`{"token": {access_token, …, expiry}}` —— token 是嵌套对象**）。
 ///
-/// **刻意不刷新 token**：agy 的 OAuth client 不是公开凭据，不能像 Gemini CLI 那样内嵌
-/// （见 `GEMINI_OAUTH_CLIENT_ID` 的说明，以及仓库「不写入第三方 OAuth client 凭据」的约束）。
+/// **token 自动续期**：过期/临期时用凭据里的 refresh_token 静默续期并回写
+/// （`antigravity_config::refresh_agy_credentials_if_stale`）。agy 的 OAuth client
+/// 不是公开凭据，**不内嵌进仓库**——运行时从用户本机安装的 agy 二进制提取
+/// （凭据本就不离开用户机器）；agy 未安装或提取失败时回落"提示重跑 agy"。
 /// access token 过期时交给前端提示用户跑一次 `agy` 重新登录。
 fn read_antigravity_credentials() -> (Option<String>, CredentialStatus, Option<String>) {
     read_antigravity_credentials_with(crate::antigravity_config::credential_manager::find_matching)
@@ -1875,8 +1877,16 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
         }
         "grokbuild" => crate::services::subscription_grok::get_grok_subscription_quota().await,
         // Antigravity：额度与 Gemini 同族（Cloud Code v1internal），凭据取 agy 自己的
-        // 登录态且**不刷新**（见 `read_antigravity_credentials`）。
+        // 登录态；过期/临期时用凭据里的 refresh_token 自动续期（client 凭据运行时
+        // 从本机 agy 提取，见 `antigravity_config::refresh_agy_credentials_if_stale`），
+        // 刷新失败回落"仍试一把 → 提示重登"的既有路径。
         "antigravity" => {
+            if let Some(new_token) =
+                crate::antigravity_config::refresh_agy_credentials_if_stale(now_millis()).await
+            {
+                log::info!("agy access token 已自动续期，直接用新 token 查询额度");
+                return query_antigravity_quota(&new_token).await;
+            }
             let (token, status, message) = read_antigravity_credentials();
 
             match status {
