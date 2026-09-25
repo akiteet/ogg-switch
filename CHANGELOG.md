@@ -38,12 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Antigravity official subscription quota: the card shows real usage for the two
-  model families Antigravity itself uses — Gemini models and Claude / GPT models —
-  with reset countdowns, sourced from the same Cloud Code endpoints agy calls
-- Oh My Pi: OAuth provider cards show the quota windows Oh My Pi records (the same
-  data the usage dashboard uses). Google accounts render as the same two families as
-  the Antigravity card, with duplicated shared windows deduplicated
+- Antigravity official subscription quota: real usage for the two model families
+  Antigravity itself uses — Gemini models and Claude / GPT models — with reset
+  countdowns, sourced from the same Cloud Code endpoints agy calls. Sessions renew
+  automatically before the token expires: the refresh token agy already stores is
+  used against the locally installed agy's own OAuth client (extracted at runtime —
+  nothing is embedded in the repository), and the refreshed credentials are written
+  back to where agy reads them
+- Oh My Pi: OAuth provider cards show the quota windows Oh My Pi records, with a
+  manual refresh button that has omp query every provider's upstream live (Google
+  accounts render as the same two families as the Antigravity card, duplicated
+  shared windows deduplicated)
 - Oh My Pi: the provider catalog is aligned with omp's own documentation — presets
   are grouped into OAuth login / API Key (built-in) / Common providers, and two chat
   providers omp supports were picked up from omp's auth rules (Command Code,
@@ -57,17 +62,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Grok Build: official usage shows real numbers now. The billing query moved from a
+  gRPC endpoint whose response carries no usage percent (the old heuristic parser
+  fabricated a 0% from it) to the supported JSON billing API; plans that report no
+  percentage show "usage unknown" with the reset countdown instead of a fake number
 - Oh My Pi: usage on provider cards works — cards read the usage script field the
   backend actually sends, native templates (balance / token plan / Copilot / official
-  subscription) resolve on cards, and API keys in `$ENV` / secret-bridge form are
+  subscription) resolve on cards, and API keys in $ENV / secret-bridge form are
   resolved instead of leaking into request headers
 - Official subscription quotas display without a manually configured usage script;
   turning the usage toggle off still opts a provider out
 - Missing or unreadable CLI credentials show a hint naming the CLI to log in with,
   instead of rendering nothing
 - Antigravity: the card no longer claims "session expired" while agy is signed in
-  (the nested token shape agy stores is now read), and quota queries succeed with
-  real numbers where they previously returned empty
+  (the nested token shape agy stores is now read)
 - Switching back to an official provider restores the CLI login that switching away
   deleted (Grok Build, Codex) — no re-login needed
 - Oh My Pi "Upgrade" works when the app process does not inherit the user's PATH
