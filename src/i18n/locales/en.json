@@ -3303,6 +3303,7 @@
     "credits": "Credits",
     "copilotPremium": "Premium",
     "utilization": "{{value}}%",
+    "usageUnknown": "Usage unknown",
     "resetsIn": "Resets in {{time}}",
     "extraUsage": "Extra Usage",
     "expired": "Session expired",

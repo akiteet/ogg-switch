@@ -178,6 +178,7 @@ async fn query_kimi(api_key: &str) -> Result<SubscriptionQuota, String> {
                     resets_at,
                     used_value_usd: None,
                     max_value_usd: None,
+                    utilization_unknown: None,
                 });
             }
         }
@@ -201,6 +202,7 @@ async fn query_kimi(api_key: &str) -> Result<SubscriptionQuota, String> {
             resets_at,
             used_value_usd: None,
             max_value_usd: None,
+            utilization_unknown: None,
         });
     }
 
@@ -304,6 +306,7 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
                 resets_at,
                 used_value_usd: None,
                 max_value_usd: None,
+                utilization_unknown: None,
             });
         }
     }
@@ -585,6 +588,7 @@ async fn query_zenmux(base_url: &str, api_key: &str) -> Result<SubscriptionQuota
             resets_at,
             used_value_usd: used_usd,
             max_value_usd: max_usd,
+            utilization_unknown: None,
         });
     }
 
@@ -606,6 +610,7 @@ async fn query_zenmux(base_url: &str, api_key: &str) -> Result<SubscriptionQuota
             resets_at,
             used_value_usd: used_usd,
             max_value_usd: max_usd,
+            utilization_unknown: None,
         });
     }
 
@@ -681,6 +686,7 @@ fn parse_minimax_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
             resets_at,
             used_value_usd: None,
             max_value_usd: None,
+            utilization_unknown: None,
         });
     }
 
@@ -700,6 +706,7 @@ fn parse_minimax_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
                 resets_at,
                 used_value_usd: None,
                 max_value_usd: None,
+                utilization_unknown: None,
             });
         }
     }
@@ -751,6 +758,7 @@ fn parse_opencode_go_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
             resets_at,
             used_value_usd: None,
             max_value_usd: None,
+            utilization_unknown: None,
         });
     }
     tiers
@@ -1137,6 +1145,7 @@ fn parse_afp_tiers(result: &serde_json::Value) -> Vec<QuotaTier> {
             resets_at,
             used_value_usd: None,
             max_value_usd: None,
+            utilization_unknown: None,
         });
     }
     tiers
@@ -1196,6 +1205,7 @@ fn parse_coding_plan_tiers(result: &serde_json::Value) -> Vec<QuotaTier> {
             resets_at,
             used_value_usd: None,
             max_value_usd: None,
+            utilization_unknown: None,
         });
     }
     tiers

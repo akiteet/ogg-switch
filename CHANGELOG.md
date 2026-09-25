@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Grok Build: official usage no longer shows a fake "0%". The billing query moved
+  from the gRPC endpoint (whose response carries no usage percent for free plans,
+  which the old heuristic parser silently papered over with a zero) to the supported
+  JSON billing API; when a plan reports no percentage the card shows "usage
+  unknown" with the reset countdown instead of a fabricated number
+- Oh My Pi: the quota windows on OAuth provider cards get a manual refresh button —
+  it runs omp's own usage command so numbers reflect what the provider reports right
+  now (omp respects its own rate-limit-safe caching), instead of waiting for OMP to
+  happen to record new snapshots
+
+
+
+### Fixed
+
 - Antigravity sessions stay alive: when the access token nears expiry it is
   refreshed automatically from the refresh token agy already stores, and the
   refreshed credentials are written back to where agy reads them. The OAuth client

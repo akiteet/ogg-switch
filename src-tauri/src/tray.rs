@@ -1598,6 +1598,7 @@ mod tests {
             resets_at: None,
             used_value_usd: None,
             max_value_usd: None,
+            utilization_unknown: None,
         }
     }
 

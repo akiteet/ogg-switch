@@ -3303,6 +3303,7 @@
     "credits": "クレジット",
     "copilotPremium": "プレミアム",
     "utilization": "{{value}}%",
+    "usageUnknown": "使用量は不明",
     "resetsIn": "{{time}}後にリセット",
     "extraUsage": "超過使用量",
     "expired": "セッション期限切れ",

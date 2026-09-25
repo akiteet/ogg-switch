@@ -3303,6 +3303,7 @@
     "credits": "額度",
     "copilotPremium": "進階請求",
     "utilization": "{{value}}%",
+    "usageUnknown": "用量未知",
     "resetsIn": "{{time}} 後重設",
     "extraUsage": "超額用量",
     "expired": "工作階段已過期",

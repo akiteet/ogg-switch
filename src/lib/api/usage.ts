@@ -218,7 +218,11 @@ export const usageApi = {
     return invoke("get_usage_data_sources");
   },
 
-  getOmpQuotaWindows: async (): Promise<OmpQuotaWindow[]> => {
-    return invoke("get_omp_quota_windows");
+  getOmpQuotaWindows: async (options?: {
+    refresh?: boolean;
+  }): Promise<OmpQuotaWindow[]> => {
+    return invoke("get_omp_quota_windows", {
+      refresh: options?.refresh ?? null,
+    });
   },
 };

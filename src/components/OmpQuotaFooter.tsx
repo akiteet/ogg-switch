@@ -1,9 +1,13 @@
-import React from "react";
+import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Clock } from "lucide-react";
+import { Clock, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 import type { Provider } from "@/types";
 import type { OmpQuotaWindow } from "@/lib/api/usage";
-import { useOmpQuotaWindows } from "@/lib/query/usage";
+import { useOmpQuotaWindows, usageKeys } from "@/lib/query/usage";
+import { usageApi } from "@/lib/api/usage";
+import { extractErrorMessage } from "@/utils/errorUtils";
 import {
   tierLabel,
   utilizationColor,
@@ -54,7 +58,28 @@ const OmpQuotaFooter: React.FC<{
   inline?: boolean;
 }> = ({ provider, inline = true }) => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { data: windows = [], isFetching } = useOmpQuotaWindows();
+  const [refreshing, setRefreshing] = useState(false);
+
+  // 手动刷新：让 OMP 用自己的凭据实时查上游（omp usage --json），后端 5 分钟
+  // OMP 侧缓存内秒回；结果直接写入共享缓存。
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const fresh = await usageApi.getOmpQuotaWindows({ refresh: true });
+      queryClient.setQueryData([...usageKeys.all, "ompQuotaWindows"], fresh);
+    } catch (err) {
+      toast.error(
+        extractErrorMessage(err) ||
+          t("usage.queryFailed", { defaultValue: "查询失败" }),
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
 
   const oauthId = (
     provider.meta?.ompOauthProviderId ?? provider.id
@@ -133,14 +158,20 @@ const OmpQuotaFooter: React.FC<{
               <span className="text-gray-500 dark:text-gray-400 font-medium min-w-0 truncate">
                 {tierLabel(tier, t)}
               </span>
-              <span
-                className={`font-semibold tabular-nums flex-shrink-0 ${utilizationColor(tier.utilization)}`}
-              >
-                {t("subscription.used")}{" "}
-                {t("subscription.utilization", {
-                  value: Math.round(tier.utilization),
-                })}
-              </span>
+              {tier.utilizationUnknown ? (
+                <span className="text-muted-foreground font-medium flex-shrink-0">
+                  {t("subscription.usageUnknown", { defaultValue: "用量未知" })}
+                </span>
+              ) : (
+                <span
+                  className={`font-semibold tabular-nums flex-shrink-0 ${utilizationColor(tier.utilization)}`}
+                >
+                  {t("subscription.used")}{" "}
+                  {t("subscription.utilization", {
+                    value: Math.round(tier.utilization),
+                  })}
+                </span>
+              )}
               {countdown && (
                 <span className="text-muted-foreground/60 flex items-center gap-px flex-shrink-0">
                   <Clock size={10} />
@@ -150,7 +181,16 @@ const OmpQuotaFooter: React.FC<{
             </div>
           );
         })}
-        {isFetching && (
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={refreshing}
+          className="p-0.5 rounded hover:bg-muted transition-colors disabled:opacity-50 text-muted-foreground"
+          title={t("usage.refresh", { defaultValue: "刷新" })}
+        >
+          <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} />
+        </button>
+        {isFetching && !refreshing && (
           <span className="text-[10px] text-muted-foreground/70">
             {t("usage.refreshing", { defaultValue: "刷新中…" })}
           </span>
@@ -171,21 +211,31 @@ const OmpQuotaFooter: React.FC<{
                   {tierLabel(tier, t)}
                 </span>
                 <span className="whitespace-nowrap flex-shrink-0">
-                  <span
-                    className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
-                  >
-                    {t("subscription.used")}{" "}
-                    {t("subscription.utilization", {
-                      value: Math.round(tier.utilization),
-                    })}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {" · "}
-                    {t("subscription.remaining")}{" "}
-                    {t("subscription.utilization", {
-                      value: Math.round(remainingPercent(tier.utilization)),
-                    })}
-                  </span>
+                  {tier.utilizationUnknown ? (
+                    <span className="text-muted-foreground font-medium">
+                      {t("subscription.usageUnknown", {
+                        defaultValue: "用量未知",
+                      })}
+                    </span>
+                  ) : (
+                    <>
+                      <span
+                        className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
+                      >
+                        {t("subscription.used")}{" "}
+                        {t("subscription.utilization", {
+                          value: Math.round(tier.utilization),
+                        })}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {" · "}
+                        {t("subscription.remaining")}{" "}
+                        {t("subscription.utilization", {
+                          value: Math.round(remainingPercent(tier.utilization)),
+                        })}
+                      </span>
+                    </>
+                  )}
                   {resetText && (
                     <span
                       className="text-muted-foreground/60 ml-0.5"

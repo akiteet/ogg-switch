@@ -38,6 +38,10 @@ pub struct QuotaTier {
     /// ZenMux: 窗口上限（USD）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_value_usd: Option<f64>,
+    /// 上游不报告百分比（如 Grok 免费计划只有周期起止）时置 true：
+    /// 前端渲染「用量未知」而不是把 0.0 当成真实已用
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub utilization_unknown: Option<bool>,
 }
 
 /// 超额使用信息
@@ -434,6 +438,7 @@ fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
                         resets_at: w.resets_at,
                         used_value_usd: None,
                         max_value_usd: None,
+                        utilization_unknown: None,
                     });
                 }
             }
@@ -454,6 +459,7 @@ fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
                         resets_at: w.resets_at,
                         used_value_usd: None,
                         max_value_usd: None,
+                        utilization_unknown: None,
                     });
                 }
             }
@@ -500,6 +506,7 @@ fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
                 resets_at: window.resets_at,
                 used_value_usd: None,
                 max_value_usd: None,
+                utilization_unknown: None,
             };
             if let Some(existing) = tiers.iter_mut().find(|t| t.name == tier_name) {
                 *existing = tier;
@@ -832,6 +839,7 @@ pub(crate) async fn query_codex_quota(
                     resets_at: window.reset_at.and_then(unix_ts_to_iso),
                     used_value_usd: None,
                     max_value_usd: None,
+                    utilization_unknown: None,
                 });
             }
         }
@@ -1298,6 +1306,7 @@ fn cloudcode_tier_fallback(load_value: &serde_json::Value) -> Option<QuotaTier> 
         resets_at: None,
         used_value_usd: None,
         max_value_usd: None,
+        utilization_unknown: None,
     })
 }
 
@@ -1506,6 +1515,7 @@ async fn query_cloudcode_quota(
                     resets_at: None,
                     used_value_usd: None,
                     max_value_usd: None,
+                    utilization_unknown: None,
                 }],
                 extra_usage: None,
                 error: None,
@@ -1622,6 +1632,7 @@ fn build_cloudcode_model_tiers(
             resets_at: reset_time,
             used_value_usd: None,
             max_value_usd: None,
+            utilization_unknown: None,
         })
         .collect();
 

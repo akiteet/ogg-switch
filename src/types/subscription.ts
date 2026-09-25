@@ -17,6 +17,11 @@ export interface QuotaTier {
    * window.label——避免把 `openai-codex:primary` 这类原始 id 当标题展示。
    */
   key?: string;
+  /**
+   * 上游不报告百分比（如 Grok 免费计划只有周期起止）时为 true：
+   * 前端渲染「用量未知」，不把 0.0 当成真实已用。
+   */
+  utilizationUnknown?: boolean;
 }
 
 export interface ExtraUsage {

@@ -1921,12 +1921,154 @@ pub async fn omp_fetch_upstream_models(
 }
 
 #[tauri::command]
-pub fn get_omp_quota_windows() -> Result<Vec<OmpQuotaWindow>, String> {
+pub async fn get_omp_quota_windows(refresh: Option<bool>) -> Result<Vec<OmpQuotaWindow>, String> {
+    // refresh=true：跑 `omp usage --json` 让 OMP 用自己的凭据实时查上游
+    // （其内置 5 分钟缓存防上游 429，这里尊重不 invalidate），并把解析结果直接
+    // 返回——OMP 同时会把新快照按小时桶写回 agent.db。任何失败回落读库。
+    if refresh.unwrap_or(false) {
+        match omp_usage_windows_live() {
+            Ok(windows) => return Ok(windows),
+            Err(err) => log::warn!("omp usage --json 刷新失败，回落读 agent.db: {err}"),
+        }
+    }
     crate::services::session_usage_omp::list_omp_quota_windows().map_err(|e| e.to_string())
+}
+
+/// 实时刷新：跑 `omp usage --json` 并解析为配额窗口。
+fn omp_usage_windows_live() -> Result<Vec<OmpQuotaWindow>, String> {
+    let output =
+        run_omp(&["usage", "--json"]).map_err(|e| format!("failed to run omp usage: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "omp usage exit {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(200)
+                .collect::<String>()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_omp_usage_json(&stdout)
+}
+
+/// 把 `omp usage --json` 的输出映射成配额窗口：
+/// `reports[].{provider, limits[].{id, label, amount.usedFraction, window.resetsAt}, metadata.email/accountId}`。
+fn parse_omp_usage_json(stdout: &str) -> Result<Vec<OmpQuotaWindow>, String> {
+    let body: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("omp usage JSON parse failed: {e}"))?;
+    let reports = body
+        .get("reports")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "omp usage output has no reports array".to_string())?;
+
+    let mut out = Vec::new();
+    for report in reports {
+        let provider = report
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let metadata = report.get("metadata");
+        let account_key = metadata
+            .and_then(|m| m.get("email"))
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                metadata
+                    .and_then(|m| m.get("accountId"))
+                    .and_then(serde_json::Value::as_str)
+            })
+            .map(str::to_string);
+        let Some(limits) = report.get("limits").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for limit in limits {
+            let Some(used_fraction) = limit
+                .get("amount")
+                .and_then(|a| a.get("usedFraction"))
+                .and_then(serde_json::Value::as_f64)
+            else {
+                continue;
+            };
+            out.push(OmpQuotaWindow {
+                provider: provider.clone(),
+                used_fraction,
+                label: limit
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                resets_at: limit
+                    .get("window")
+                    .and_then(|w| w.get("resetsAt"))
+                    .and_then(serde_json::Value::as_i64),
+                account_key: account_key.clone(),
+                limit_id: limit
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            });
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 真实输出（2026-09-25 实测，节选）：字段名与嵌套必须严格对齐解析器
+    #[test]
+    fn parse_omp_usage_json_maps_reports_to_windows() {
+        let stdout = r#"{
+          "generatedAt": 1790338718162,
+          "reports": [
+            {
+              "provider": "openai-codex",
+              "fetchedAt": 1790338715822,
+              "limits": [
+                {
+                  "id": "openai-codex:primary",
+                  "label": "30 days",
+                  "window": { "id": "30d", "resetsAt": 1792454433000 },
+                  "amount": { "used": 1, "limit": 100, "remaining": 99, "usedFraction": 0.01 },
+                  "status": "ok"
+                }
+              ],
+              "metadata": { "email": "a@gmail.com", "accountId": "u1" }
+            },
+            {
+              "provider": "xai-oauth",
+              "limits": [
+                {
+                  "id": "xai-oauth:credits:1w",
+                  "label": "SuperGrok Weekly Credits",
+                  "window": { "resetsAt": 1792454000000 },
+                  "amount": { "usedFraction": 0.0 }
+                }
+              ],
+              "metadata": { "accountId": "u2" }
+            }
+          ]
+        }"#;
+        let windows = parse_omp_usage_json(stdout).expect("should parse");
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].provider, "openai-codex");
+        assert_eq!(windows[0].used_fraction, 0.01);
+        assert_eq!(windows[0].label.as_deref(), Some("30 days"));
+        assert_eq!(windows[0].limit_id.as_deref(), Some("openai-codex:primary"));
+        assert_eq!(windows[0].resets_at, Some(1792454433000));
+        assert_eq!(windows[0].account_key.as_deref(), Some("a@gmail.com"));
+        // 无 email 时回落 accountId
+        assert_eq!(windows[1].account_key.as_deref(), Some("u2"));
+        assert_eq!(windows[1].used_fraction, 0.0);
+    }
+
+    #[test]
+    fn parse_omp_usage_json_rejects_missing_reports() {
+        assert!(parse_omp_usage_json("{}").is_err());
+        assert!(parse_omp_usage_json("not json").is_err());
+    }
+
     use super::*;
 
     // 与真实 ~/.omp/agent/models.yml 一致的结构（含 secret-bridge apiKey、authHeader、多模型）
