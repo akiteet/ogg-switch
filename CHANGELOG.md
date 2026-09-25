@@ -5,7 +5,49 @@ All notable changes to OGG Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.3] - 2026-09-25
+
+### Added
+
+- Antigravity official subscription quota: the card shows real usage for the two
+  model families Antigravity itself uses — Gemini models and Claude / GPT models —
+  with reset countdowns, sourced from the same Cloud Code endpoints agy calls
+- Oh My Pi: OAuth provider cards show the quota windows Oh My Pi records (the same
+  data the usage dashboard uses). Google accounts render as the same two families as
+  the Antigravity card, with duplicated shared windows deduplicated
+- Oh My Pi: the provider catalog is aligned with omp's own documentation — presets
+  are grouped into OAuth login / API Key (built-in) / Common providers, and two chat
+  providers omp supports were picked up from omp's auth rules (Command Code,
+  Abliteration)
+- Balance queries for providers without a built-in balance API explain what is
+  supported and how to switch to a custom usage script, instead of failing with a
+  bare error
+- Full multi-language coverage: every string added since 1.1.2 is available in all
+  four languages (English, Simplified Chinese, Traditional Chinese, Japanese), and
+  backend errors render in the configured language as well
+
+### Fixed
+
+- Oh My Pi: usage on provider cards works — cards read the usage script field the
+  backend actually sends, native templates (balance / token plan / Copilot / official
+  subscription) resolve on cards, and API keys in `$ENV` / secret-bridge form are
+  resolved instead of leaking into request headers
+- Official subscription quotas display without a manually configured usage script;
+  turning the usage toggle off still opts a provider out
+- Missing or unreadable CLI credentials show a hint naming the CLI to log in with,
+  instead of rendering nothing
+- Antigravity: the card no longer claims "session expired" while agy is signed in
+  (the nested token shape agy stores is now read), and quota queries succeed with
+  real numbers where they previously returned empty
+- Switching back to an official provider restores the CLI login that switching away
+  deleted (Grok Build, Codex) — no re-login needed
+- Oh My Pi "Upgrade" works when the app process does not inherit the user's PATH
+  (typically right after an MSI self-update), and PowerShell upgrade failures show
+  readable text instead of CLIXML dumps
+- Quota percentages are labeled: cards show "used 42%", the expanded view
+  "used 42% · remaining 58%"
+- The "Environment variable backups" section in Settings → Advanced is translated
+  into all four languages
 
 ## [1.1.2] - 2026-09-23
 
