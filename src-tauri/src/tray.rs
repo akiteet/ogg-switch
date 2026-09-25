@@ -222,6 +222,8 @@ fn format_subscription_summary(
     let entries: Vec<(&str, f64)> = quota
         .tiers
         .iter()
+        // 上游不报告百分比的窗口（utilization_unknown）不进托盘——不伪造 0%
+        .filter(|tier| tier.utilization_unknown != Some(true))
         .map(|tier| (tier.name.as_str(), tier.utilization))
         .collect();
     let parts = labeled_tier_parts(&entries);

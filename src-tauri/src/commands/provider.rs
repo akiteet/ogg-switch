@@ -718,6 +718,8 @@ async fn query_provider_usage_inner(
         let data: Vec<crate::provider::UsageData> = quota
             .tiers
             .iter()
+            // 上游不报告百分比的窗口（utilization_unknown）不产出伪造的 0% 数据点
+            .filter(|tier| tier.utilization_unknown != Some(true))
             .map(|tier| {
                 let total = 100.0;
                 let used = tier.utilization;

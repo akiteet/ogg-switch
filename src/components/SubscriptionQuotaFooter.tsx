@@ -443,15 +443,17 @@ export const TierBadge: React.FC<{
   const countdown = countdownStr(tier.resetsAt);
   // 套餐名兜底 tier（current_plan:）没有百分比数据，只显示套餐名本身
   const isPlanOnly = tier.name.startsWith("current_plan:");
+  // 上游不报告百分比（Grok 免费计划）：显示「用量未知」，不把 0.0 当真实已用
+  const isUsageUnknown = tier.utilizationUnknown === true;
 
   const hasUsd = tier.usedValueUsd != null && tier.maxValueUsd != null;
 
   return (
     <div className="flex items-center gap-0.5">
-      {!isPlanOnly && (
+      {!isPlanOnly && !isUsageUnknown && (
         <span className="text-gray-500 dark:text-gray-400">{label}:</span>
       )}
-      {!isPlanOnly && (
+      {!isPlanOnly && !isUsageUnknown && (
         <span
           className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
         >
@@ -461,9 +463,10 @@ export const TierBadge: React.FC<{
           })}
         </span>
       )}
-      {isPlanOnly && (
+      {(isPlanOnly || isUsageUnknown) && (
         <span className="font-semibold text-gray-500 dark:text-gray-400">
-          {label}
+          {isUsageUnknown ? `${label}: ` : ""}
+          {t("subscription.usageUnknown", { defaultValue: "用量未知" })}
         </span>
       )}
       {hasUsd && !isPlanOnly && (
@@ -490,6 +493,7 @@ const TierBar: React.FC<{
   const label = tierLabel(tier, t);
   const resetText = formatResetTime(tier.resetsAt, t);
   const isPlanOnly = tier.name.startsWith("current_plan:");
+  const isUsageUnknown = tier.utilizationUnknown === true;
 
   if (isPlanOnly) {
     return (
@@ -499,6 +503,25 @@ const TierBar: React.FC<{
         </span>
         <span className="text-[10px] text-muted-foreground/70">
           {t("subscription.noWindowData")}
+        </span>
+      </div>
+    );
+  }
+
+  if (isUsageUnknown) {
+    // 上游不报告百分比：只展示窗口与重置时间，进度条不渲染（无数据可画）
+    return (
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-500 dark:text-gray-400 min-w-0 font-medium truncate">
+          {label}
+        </span>
+        <span className="flex items-center gap-2 flex-shrink-0 whitespace-nowrap text-muted-foreground">
+          {t("subscription.usageUnknown", { defaultValue: "用量未知" })}
+          {resetText && (
+            <span className="text-[10px] truncate" title={resetText}>
+              {resetText}
+            </span>
+          )}
         </span>
       </div>
     );
