@@ -4,80 +4,141 @@ use axum::{
     Json,
 };
 use serde_json::json;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
+/// 手写 Display 以按设置语言输出（zh 文案逐字保留，既有测试断言不受影响）。
+impl std::fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ProxyError::ResponseBodyTooLarge(n) => crate::error::pick(
+                &format!("上游响应体超过大小上限: {n} 字节"),
+                &format!("Upstream response body exceeds the size limit: {n} bytes"),
+            ),
+            ProxyError::AlreadyRunning => {
+                crate::error::pick("服务器已在运行", "Server is already running")
+            }
+            ProxyError::NotRunning => crate::error::pick("服务器未运行", "Server is not running"),
+            ProxyError::BindFailed(d) => crate::error::pick(
+                &format!("地址绑定失败: {d}"),
+                &format!("Failed to bind address: {d}"),
+            ),
+            ProxyError::StopTimeout => crate::error::pick("停止超时", "Stop timed out"),
+            ProxyError::StopFailed(d) => {
+                crate::error::pick(&format!("停止失败: {d}"), &format!("Failed to stop: {d}"))
+            }
+            ProxyError::ForwardFailed(d) => crate::error::pick(
+                &format!("请求转发失败: {d}"),
+                &format!("Request forwarding failed: {d}"),
+            ),
+            ProxyError::NoAvailableProvider => {
+                crate::error::pick("无可用的Provider", "No provider available")
+            }
+            ProxyError::AllProvidersCircuitOpen => crate::error::pick(
+                "所有供应商已熔断，无可用渠道",
+                "All providers are circuit-broken; no channel available",
+            ),
+            ProxyError::NoProvidersConfigured => {
+                crate::error::pick("未配置供应商", "No providers configured")
+            }
+            ProxyError::ProviderUnhealthy(d) => crate::error::pick(
+                &format!("Provider不健康: {d}"),
+                &format!("Provider unhealthy: {d}"),
+            ),
+            ProxyError::UpstreamError { status, body } => crate::error::pick(
+                &format!("上游错误 (状态码 {status}): {body:?}"),
+                &format!("Upstream error (status {status}): {body:?}"),
+            ),
+            ProxyError::MaxRetriesExceeded => {
+                crate::error::pick("超过最大重试次数", "Max retries exceeded")
+            }
+            ProxyError::DatabaseError(d) => {
+                crate::error::pick(&format!("数据库错误: {d}"), &format!("Database error: {d}"))
+            }
+            ProxyError::ConfigError(d) => {
+                crate::error::pick(&format!("配置错误: {d}"), &format!("Config error: {d}"))
+            }
+            ProxyError::TransformError(d) => crate::error::pick(
+                &format!("格式转换错误: {d}"),
+                &format!("Transform error: {d}"),
+            ),
+            ProxyError::InvalidRequest(d) => crate::error::pick(
+                &format!("无效的请求: {d}"),
+                &format!("Invalid request: {d}"),
+            ),
+            ProxyError::Timeout(d) => {
+                crate::error::pick(&format!("超时: {d}"), &format!("Timeout: {d}"))
+            }
+            ProxyError::StreamIdleTimeout(secs) => crate::error::pick(
+                &format!("流式响应空闲超时: {secs}秒无数据"),
+                &format!("Streaming idle timeout: {secs}s without data"),
+            ),
+            ProxyError::AuthError(d) => crate::error::pick(
+                &format!("认证失败: {d}"),
+                &format!("Authentication failed: {d}"),
+            ),
+            ProxyError::Internal(d) => {
+                crate::error::pick(&format!("内部错误: {d}"), &format!("Internal error: {d}"))
+            }
+        };
+        write!(f, "{s}")
+    }
+}
+
+#[derive(Debug)]
 pub enum ProxyError {
-    #[error("上游响应体超过大小上限: {0} 字节")]
     ResponseBodyTooLarge(usize),
 
-    #[error("服务器已在运行")]
     AlreadyRunning,
 
-    #[error("服务器未运行")]
     NotRunning,
 
-    #[error("地址绑定失败: {0}")]
     BindFailed(String),
 
-    #[error("停止超时")]
     StopTimeout,
 
-    #[error("停止失败: {0}")]
     StopFailed(String),
 
-    #[error("请求转发失败: {0}")]
     ForwardFailed(String),
 
-    #[error("无可用的Provider")]
     NoAvailableProvider,
 
-    #[error("所有供应商已熔断，无可用渠道")]
     AllProvidersCircuitOpen,
 
-    #[error("未配置供应商")]
     NoProvidersConfigured,
 
     #[allow(dead_code)]
-    #[error("Provider不健康: {0}")]
     ProviderUnhealthy(String),
 
-    #[error("上游错误 (状态码 {status}): {body:?}")]
-    UpstreamError { status: u16, body: Option<String> },
+    UpstreamError {
+        status: u16,
+        body: Option<String>,
+    },
 
-    #[error("超过最大重试次数")]
     MaxRetriesExceeded,
 
-    #[error("数据库错误: {0}")]
     DatabaseError(String),
 
-    #[error("配置错误: {0}")]
     ConfigError(String),
 
     #[allow(dead_code)]
-    #[error("格式转换错误: {0}")]
     TransformError(String),
 
     #[allow(dead_code)]
-    #[error("无效的请求: {0}")]
     InvalidRequest(String),
 
-    #[error("超时: {0}")]
     Timeout(String),
 
     /// 流式响应空闲超时
     #[allow(dead_code)]
-    #[error("流式响应空闲超时: {0}秒无数据")]
     StreamIdleTimeout(u64),
 
     /// 认证错误
-    #[error("认证失败: {0}")]
     AuthError(String),
 
     #[allow(dead_code)]
-    #[error("内部错误: {0}")]
     Internal(String),
 }
+
+impl std::error::Error for ProxyError {}
 
 impl IntoResponse for ProxyError {
     fn into_response(self) -> Response {

@@ -421,6 +421,22 @@ fn parse_f64_field(obj: &serde_json::Value, field: &str) -> Option<f64> {
 
 // ── 公开入口 ────────────────────────────────────────────────
 
+/// 「未知供应商」的可行动错误文案（按设置语言折叠，照
+/// `services/provider/usage.rs` 的 zh/en 口径；ja/zh-TW 回落 en 同现有约定）。
+///
+/// 保留 `Unknown balance provider` 英文前缀：前端 `isTransientUsageError`
+/// 白名单按文案关键词分类，该前缀不在任何瞬时关键词里，稳定判为确定性失败
+/// （改文案时勿引入 "network error"/"请求失败" 等词，见 tests/lib/keepLastGoodUsage.test.ts）。
+fn unknown_balance_provider_message(lang: &str) -> String {
+    if lang == "en" {
+        "Unknown balance provider: automatic balance queries support DeepSeek, StepFun, SiliconFlow, OpenRouter and NovitaAI only. Switch this provider's usage template to the general template and customize the query script instead."
+            .to_string()
+    } else {
+        "Unknown balance provider: 自动余额查询目前仅支持 DeepSeek、StepFun、SiliconFlow、OpenRouter、NovitaAI。请将该供应商的用量模板改为「通用模板」并自定义查询脚本。"
+            .to_string()
+    }
+}
+
 /// 查询余额。瞬时传输失败返回 `Err`（前端 reject → retry + 保留上次成功值），
 /// 确定性失败返回 `Ok(success:false)`（见模块级文档）。
 pub async fn get_balance(base_url: &str, api_key: &str) -> Result<UsageResult, String> {
@@ -435,11 +451,16 @@ pub async fn get_balance(base_url: &str, api_key: &str) -> Result<UsageResult, S
     let provider = match detect_provider(base_url) {
         Some(p) => p,
         None => {
+            // 未知供应商（如腾讯混元——腾讯没有 Bearer 型余额端点）：给出可行动
+            // 引导而不是一句干巴巴的 Unknown，让用户自己去切通用模板。
+            let lang = crate::settings::get_settings()
+                .language
+                .unwrap_or_else(|| "zh".to_string());
             return Ok(UsageResult {
                 success: false,
                 data: None,
-                error: Some("Unknown balance provider".to_string()),
-            })
+                error: Some(unknown_balance_provider_message(&lang)),
+            });
         }
     };
 
@@ -450,5 +471,77 @@ pub async fn get_balance(base_url: &str, api_key: &str) -> Result<UsageResult, S
         BalanceProvider::SiliconFlowEn => query_siliconflow(api_key, false).await,
         BalanceProvider::OpenRouter => query_openrouter(api_key).await,
         BalanceProvider::NovitaAI => query_novita(api_key).await,
+    }
+}
+
+// ── 测试 ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_provider_matches_known_hosts() {
+        assert!(matches!(
+            detect_provider("https://api.deepseek.com"),
+            Some(BalanceProvider::DeepSeek)
+        ));
+        assert!(matches!(
+            detect_provider("https://api.stepfun.com/v1"),
+            Some(BalanceProvider::StepFun)
+        ));
+        assert!(matches!(
+            detect_provider("https://api.stepfun.ai/v1"),
+            Some(BalanceProvider::StepFun)
+        ));
+        assert!(matches!(
+            detect_provider("https://api.siliconflow.cn/v1"),
+            Some(BalanceProvider::SiliconFlow)
+        ));
+        assert!(matches!(
+            detect_provider("https://api.siliconflow.com/v1"),
+            Some(BalanceProvider::SiliconFlowEn)
+        ));
+        assert!(matches!(
+            detect_provider("https://openrouter.ai/api/v1"),
+            Some(BalanceProvider::OpenRouter)
+        ));
+        assert!(matches!(
+            detect_provider("https://api.novita.ai/v3"),
+            Some(BalanceProvider::NovitaAI)
+        ));
+    }
+
+    #[test]
+    fn detect_provider_rejects_unknown_hosts() {
+        // 腾讯混元（OGG 常见供应商预设）：腾讯没有 Bearer 型余额端点（余额走
+        // 腾讯云 Billing API，需要独立的 SecretId/SecretKey），必须走引导而不是查询。
+        assert!(detect_provider("https://api.hunyuan.cloud.tencent.com/v1").is_none());
+        assert!(detect_provider("https://one-api.example.com/v1").is_none());
+        assert!(detect_provider("").is_none());
+    }
+
+    #[test]
+    fn unknown_balance_provider_message_keeps_stable_prefix_and_actionable_guidance() {
+        let zh = unknown_balance_provider_message("zh");
+        let en = unknown_balance_provider_message("en");
+        let ja = unknown_balance_provider_message("ja");
+        // ja/zh-TW 按 usage.rs 口径回落 zh
+        assert_eq!(ja, zh);
+
+        for msg in [zh, en] {
+            // 前缀是前端 isTransientUsageError 分类的语义锚点，不能丢
+            assert!(msg.starts_with("Unknown balance provider"), "{msg}");
+            assert!(msg.contains("DeepSeek"), "{msg}");
+            assert!(msg.contains("NovitaAI"), "{msg}");
+            // 可行动指引：改用通用模板
+            assert!(
+                msg.contains("通用模板") || msg.contains("general template"),
+                "{msg}"
+            );
+            // 分类安全：不得含瞬时错误关键词（network error / 请求失败 / …）
+            assert!(!msg.to_lowercase().contains("network error"), "{msg}");
+            assert!(!msg.contains("请求失败"), "{msg}");
+        }
     }
 }

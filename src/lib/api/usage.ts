@@ -24,6 +24,10 @@ export interface OmpQuotaWindow {
   usedFraction: number;
   label?: string | null;
   resetsAt?: number | null;
+  /** 账号标识（oauth|account:…|email:…），多账号去重用 */
+  accountKey?: string | null;
+  /** 完整窗口 id（如 `xai-oauth:credits:1w`），适合做 tier 身份 */
+  limitId?: string | null;
 }
 
 export const usageApi = {

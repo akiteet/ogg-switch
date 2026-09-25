@@ -300,11 +300,25 @@ fn run_tool_lifecycle_silently(command_line: &str, label: &str) -> Result<(), St
         std::env::temp_dir().join(format!("cc_switch_{}_{}.bat", label, std::process::id()));
     std::fs::write(&bat_file, command_line).map_err(|e| format!("写入批处理文件失败: {e}"))?;
 
-    let output = Command::new("cmd")
-        .arg("/C")
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C")
         .arg(&bat_file)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+        .creation_flags(CREATE_NO_WINDOW);
+    // 与 POSIX 侧的 `login_shell_path` 分支对称：GUI 进程继承的 PATH 可能是残缺的
+    // （MSI 自更新后由安装器重启的进程尤其如此——实测该进程 PATH 里既没有
+    // `~/.bun/bin` 也没有 omp，`omp update` 直接以 `'omp' 不是内部或外部命令` 失败，
+    // 兜底 installer 也因 `Get-Command bun` 找不到而转去 GitHub Releases 下载）。
+    // 探测链路（`enumerate_tool_installations` / `resolve_path_default`）用的就是
+    // `effective_path_string()`（进程 PATH ∪ 注册表 用户/机器 PATH），执行链路必须
+    // 看到同一组目录，否则会出现「探测得到、升级却找不到」的割裂。
+    // **刻意不把 `build_tool_search_paths` 的候选目录前插**：那些目录里可能有
+    // npm / nvm shim，前插会改掉静态命令里「PATH 第一个 npm」的语义。
+    let execution_path = effective_path_string();
+    if !execution_path.is_empty() {
+        cmd.env("PATH", execution_path);
+    }
+
+    let output = cmd.output();
     let _ = std::fs::remove_file(&bat_file);
 
     finish_lifecycle_output(&output.map_err(|e| format!("启动安装进程失败: {e}"))?)
@@ -316,8 +330,8 @@ fn finish_lifecycle_output(output: &std::process::Output) -> Result<(), String> 
     if output.status.success() {
         return Ok(());
     }
-    let stderr = decode_command_output(&output.stderr);
-    let stdout = decode_command_output(&output.stdout);
+    let stderr = humanize_powershell_output(&decode_command_output(&output.stderr));
+    let stdout = humanize_powershell_output(&decode_command_output(&output.stdout));
     let raw = if stderr.trim().is_empty() {
         stdout.trim()
     } else {
@@ -329,6 +343,141 @@ fn finish_lifecycle_output(output: &std::process::Output) -> Result<(), String> 
     } else {
         detail
     })
+}
+
+/// 把 PowerShell 的 CLIXML 包装还原成人可读文本。
+///
+/// `powershell.exe -EncodedCommand` 的输出被重定向（父进程不是控制台）时，progress /
+/// information / error 记录会被序列化成 CLIXML（`#< CLIXML` 加 `<Objs …>`），原样
+/// 进错误详情就是一屏 XML —— 2026-09-23 用户报障的 toast 整段都是这个。这里抽出
+/// `<Objs>` 段里的可读字符串（`<ToString>` / `<S N="Message">`），去掉协议外壳；
+/// 不含 CLIXML 的文本原样返回。
+fn humanize_powershell_output(text: &str) -> String {
+    const MARKER: &str = "#< CLIXML";
+    let Some(marker_at) = text.find(MARKER) else {
+        return text.to_string();
+    };
+
+    let mut out = String::new();
+    // 标记之前可能是**真正有用**的普通输出（例如 cmd 的
+    // `'omp' 不是内部或外部命令…`），必须保留。
+    let prefix = text[..marker_at].trim_end();
+    if !prefix.is_empty() {
+        out.push_str(prefix);
+    }
+
+    let rest = &text[marker_at + MARKER.len()..];
+    let Some(objs_start) = rest.find("<Objs") else {
+        // 只有标记、没有负载：丢掉协议噪声即可。
+        return out;
+    };
+    let Some(objs_close_at) = rest[objs_start..].rfind("</Objs>") else {
+        return out;
+    };
+    let objs_end = objs_start + objs_close_at + "</Objs>".len();
+    let suffix = rest[objs_end..].trim();
+
+    let mut messages: Vec<String> = Vec::new();
+    for value in clixml_text_values(&rest[objs_start..objs_end]) {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        // 同一条记录会以多个形态序列化（`<ToString>` 带 category/换行、`<S N="Message">`
+        // 只有正文；progress 记录还会被重复写多次），去重规则：完全相同、或已被更长的
+        // 版本涵盖（`Message` 是 `ToString` 的前缀）都不再单独列一行。
+        if messages
+            .iter()
+            .any(|seen| seen == value || seen.contains(value))
+        {
+            continue;
+        }
+        messages.retain(|seen| !value.contains(seen.as_str()));
+        messages.push(value.to_string());
+    }
+
+    for chunk in messages.iter().map(String::as_str).chain(
+        // `<Objs>` 之后可能还有普通文本（PowerShell 偶尔会在关闭标签后继续写 stderr）。
+        if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix)
+        },
+    ) {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(chunk);
+    }
+    out
+}
+
+/// 抽取 CLIXML 记录里的可读字符串，按文档顺序返回。
+///
+/// 认两种形态：`<ToString>…</ToString>`（information / error 记录的文本形态）与
+/// `<S N="Message">…</S>`（ErrorRecord / HostInformationMessage 的 Message 属性）。
+/// 其余属性（`<B N="NoNewLine">`、`<AV>` 这类）刻意不收——它们是协议噪音。
+fn clixml_text_values(xml: &str) -> Vec<String> {
+    const PATTERNS: [(&str, &str); 2] =
+        [("<ToString>", "</ToString>"), ("<S N=\"Message\">", "</S>")];
+
+    let mut values = Vec::new();
+    let mut cursor = 0usize;
+    loop {
+        let next = PATTERNS
+            .iter()
+            .filter_map(|(open, close)| {
+                xml[cursor..]
+                    .find(open)
+                    .map(|rel| (cursor + rel, *open, *close))
+            })
+            .min_by_key(|(at, _, _)| *at);
+        let Some((at, open, close)) = next else { break };
+        let value_at = at + open.len();
+        let Some(close_rel) = xml[value_at..].find(close) else {
+            break;
+        };
+        values.push(clixml_unescape(&xml[value_at..value_at + close_rel]));
+        cursor = value_at + close_rel + close.len();
+    }
+    values
+}
+
+/// CLIXML 的文本转义还原：XML 实体 + `_xHHHH_` 形式（CR/LF 等控制字符被序列化器
+/// 压平写成这种占位符，不还原的话多行错误会挤成一行）。
+fn clixml_unescape(raw: &str) -> String {
+    let decoded = raw
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+
+    let mut out = String::with_capacity(decoded.len());
+    let mut rest = decoded.as_str();
+    while let Some(at) = rest.find("_x") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        // 只看前 4 字节是否 ASCII 十六进制 + 第 5 字节是否 `_`，再切片——先做 ASCII
+        // 判定即可保证 `&after[..4]` 落在字符边界上。
+        let bytes = after.as_bytes();
+        let is_escape =
+            bytes.len() >= 5 && bytes[4] == b'_' && bytes[..4].iter().all(u8::is_ascii_hexdigit);
+        if is_escape {
+            if let Some(decoded_char) = u32::from_str_radix(&after[..4], 16)
+                .ok()
+                .and_then(char::from_u32)
+            {
+                out.push(decoded_char);
+                rest = &after[5..];
+                continue;
+            }
+        }
+        out.push_str("_x");
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 取文本末尾最多 `n` 行（npm / pip 的关键错误通常出现在输出尾部）。
@@ -600,6 +749,34 @@ fn omp_install_windows_command() -> String {
     )
 }
 
+/// Oh My Pi 的升级链 = `<绝对路径的 omp> update || 官方 installer`（与静态命令同形，
+/// 只是 primary 换成锚定路径）。
+///
+/// **为什么必须锚定绝对路径**：omp 由 bun 全局装在 `~/.bun/bin`，而 GUI 进程继承的
+/// PATH 里常常没有它——MSI 自更新后由安装器重启的进程尤其如此。实测（2026-09-23）：
+/// 该进程的 PATH 里既没有 `~/.bun/bin` 也没有任何 omp，裸 `omp update` 直接以
+/// `'omp' 不是内部或外部命令` 失败，只剩兜底 installer；而 installer 自己也靠 PATH
+/// 找 bun（`Get-Command bun`），找不到就转去 GitHub Releases 下载二进制，API 不通时
+/// 整条命令报错。锚定后 primary 不再依赖 PATH，installer 只在真正需要时兜底。
+///
+/// Windows 侧不走 `chain_update_commands`：它会给 `||` 右侧加 `call`，而这里 fallback
+/// 是 `powershell.exe`（不是 .cmd/.bat），不需要 `call` —— 与
+/// `antigravity_update_windows_command`、`hermes_update_windows_command` 同一约定。
+#[cfg(target_os = "windows")]
+fn omp_update_command(update: String) -> String {
+    format!("{update} || {}", omp_install_windows_command())
+}
+
+/// POSIX 侧同链：`<绝对路径的 omp> update || 官方 installer`。
+#[cfg(not(target_os = "windows"))]
+fn omp_update_command(update: String) -> String {
+    chain_update_commands(
+        update,
+        OMP_INSTALL_UNIX.to_string(),
+        LifecycleCommandShell::Posix,
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn hermes_update_windows_command() -> String {
     // fallback 是 powershell.exe，不是 .cmd/.bat；这里不需要 `call`。PowerShell 的
@@ -629,7 +806,11 @@ fn npm_install_command_for(tool: &str) -> Option<&'static str> {
 
 fn official_update_args(tool: &str) -> Option<&'static str> {
     match tool {
-        "claude" | "codex" | "grok" | "hermes" => Some("update"),
+        // omp 也在表内（v18 起有 `update` 子命令，官方语义即"检查并安装更新"），
+        // 供 `anchored_official_update_command` 生成 `<绝对路径> update`；
+        // 它**不**因此进入 `prefers_official_update`——omp 的静态命令由
+        // `tool_action_shell_command_for_shell` 的 omp 分支单独给出（见 `omp_update_command`）。
+        "claude" | "codex" | "grok" | "hermes" | "omp" => Some("update"),
         "openclaw" => Some("update --yes"),
         "opencode" => Some("upgrade"),
         _ => None,
@@ -1231,9 +1412,7 @@ pub(crate) struct AgyManifestEntry {
 }
 
 /// 拉取 agy 的 release manifest 条目（version / url / sha512 三者齐全才算有效）。
-pub(crate) async fn fetch_agy_manifest_entry(
-    client: &reqwest::Client,
-) -> Option<AgyManifestEntry> {
+pub(crate) async fn fetch_agy_manifest_entry(client: &reqwest::Client) -> Option<AgyManifestEntry> {
     for platform in agy_manifest_platform_keys() {
         let url = format!("{AGY_MANIFEST_BASE}/{platform}.json");
         let Ok(resp) = client.get(&url).timeout(LATEST_PROBE_TIMEOUT).send().await else {
@@ -3194,6 +3373,14 @@ fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) ->
             anchored_official_update_command(tool, bin_path)?,
         ));
     }
+    if tool == "omp" {
+        // omp 无 npm 包（`npm_package_for` 刻意不收它，见该表注释），包管理器分支恒为
+        // None；不锚定的话整条命令退化成裸 `omp update`，GUI 进程 PATH 里查不到 omp
+        // 就等于「升级必失败」。这里与 grok native 同形：自升级 + 官方 installer 兜底。
+        return Some(omp_update_command(anchored_official_update_command(
+            tool, bin_path,
+        )?));
+    }
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path, real_target);
     if brew_formula_from_path(real_target).is_some() {
         return package_command;
@@ -3274,6 +3461,13 @@ fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) ->
         return Some(grok_native_update_command(
             anchored_official_update_command(tool, bin_path)?,
         ));
+    }
+    if tool == "omp" {
+        // 见 POSIX 版同名分支与 `omp_update_command` 的注释：omp 没有 npm 包可锚，
+        // 不锚定就退化成裸 `omp update`（GUI 进程 PATH 里查不到 = 升级必失败）。
+        return Some(omp_update_command(anchored_official_update_command(
+            tool, bin_path,
+        )?));
     }
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path);
     if prefers_official_update(tool, LifecycleCommandShell::WindowsBatch) {
@@ -5591,6 +5785,145 @@ mod tests {
         }
     }
 
+    /// PowerShell CLIXML 还原：错误详情不能是一屏 XML。用户报障（2026-09-23）的 toast
+    /// 整段都是 `#< CLIXML …`，这里用**当时真实的 stderr** 固化回归。
+    mod clixml_humanization {
+        use super::super::*;
+
+        /// 用户报障时 toast 里的原始 stderr：cmd 的「找不到 omp」+ 官方 installer 的
+        /// CLIXML（progress 记录 ×3 + information 记录）。
+        const REPORTED_STDERR: &str = concat!(
+            "'omp' 不是内部或外部命令，也不是可运行的程序或批处理文件。",
+            "#< CLIXML\n",
+            r#"<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">"#,
+            r#"<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T></TN><MS>"#,
+            r#"<I64 N="SourceId">1</I64><PR N="Record"><AV>正在准备首次使用模块。</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj>"#,
+            r#"<Obj S="progress" RefId="1"><TNRef RefId="0" /><MS><I64 N="SourceId">2</I64><PR N="Record"><AV>正在准备首次使用模块。</AV><AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj>"#,
+            r#"<Obj S="information" RefId="2"><TN RefId="1"><T>System.Management.Automation.InformationRecord</T><T>System.Object</T></TN>"#,
+            r#"<TO>ToString:Fetching latest release...</TO><Props><Obj N="MessageData" RefId="3"><TNRef RefId="2"><T>System.Management.Automation.HostInformationMessage</T></TN>"#,
+            r#"<ToString>Fetching latest release...</ToString><Props><S N="Message">Fetching latest release...</S><B N="NoNewLine">false</B></Props></Obj></Props></Obj></Objs>"#
+        );
+
+        #[test]
+        fn reported_stderr_becomes_readable_text() {
+            let humanized = humanize_powershell_output(REPORTED_STDERR);
+
+            // cmd 的报错（CLIXML 标记之前的普通文本）必须保留——那是用户实际要看的
+            // 「哪一步没找到」。
+            assert!(
+                humanized.contains("'omp' 不是内部或外部命令"),
+                "{humanized}"
+            );
+            // installer 自己打印的进度也是一条有用线索（走的是 Binary 分支）。
+            assert!(
+                humanized.contains("Fetching latest release..."),
+                "{humanized}"
+            );
+            // 协议外壳与 XML 一个都不许留在详情里。
+            assert!(!humanized.contains("CLIXML"), "{humanized}");
+            assert!(!humanized.contains("<Objs"), "{humanized}");
+            assert!(!humanized.contains("RefId"), "{humanized}");
+            // progress 记录的 <AV>（"正在准备首次使用模块。"）是 PowerShell 自己的
+            // 启动噪声，不在抽取范围内——错误详情里不该出现它。
+            assert!(!humanized.contains("正在准备首次使用模块"), "{humanized}");
+            assert!(humanized.lines().count() <= 3, "{humanized}");
+        }
+
+        #[test]
+        fn error_records_keep_their_message_and_unfold_newlines() {
+            // ErrorRecord 形态：<S N="Message"> 与 <ToString> 都可能承载真实原因；
+            // 序列化器把换行压成 `_x000D_`/`_x000A_`，还原时得摊回多行。
+            let raw = concat!(
+                "#< CLIXML\n",
+                r#"<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">"#,
+                r#"<Obj S="error" RefId="0"><TN RefId="1"><T>System.Management.Automation.ErrorRecord</T></TN>"#,
+                r#"<ToString>Bun 1.3.14 or newer is required. Current version: 1.2.0._x000D__x000A_Upgrade Bun at https://bun.sh</ToString>"#,
+                r#"<Props><S N="Message">Bun 1.3.14 or newer is required. Current version: 1.2.0.</S></Props></Obj></Objs>"#
+            );
+            let humanized = humanize_powershell_output(raw);
+            assert!(
+                humanized.contains("Bun 1.3.14 or newer is required"),
+                "{humanized}"
+            );
+            assert!(!humanized.contains("_x000D_"), "{humanized}");
+            assert!(
+                humanized.lines().any(|l| l.contains("Upgrade Bun")),
+                "{humanized}"
+            );
+            // Message 是 ToString 的正文前缀：只保留更完整的那条（ToString 两行），
+            // 不留重复的截断版。
+            assert_eq!(
+                humanized.matches("Bun 1.3.14 or newer is required").count(),
+                1,
+                "{humanized}"
+            );
+            assert_eq!(humanized.lines().count(), 2, "{humanized}");
+        }
+
+        #[test]
+        fn escaped_xml_entities_and_broken_payloads_are_handled() {
+            let escaped = humanize_powershell_output(
+                r#"#< CLIXML
+<Objs Version="1.1.0.1"><Obj S="information"><ToString>&lt;omp&gt; failed &amp; exited 1</ToString></Obj></Objs>"#,
+            );
+            assert_eq!(escaped, "<omp> failed & exited 1");
+
+            // 只有标记没有负载 / 负载缺关闭标签：丢掉协议噪声，不 panic、不吐 XML。
+            assert_eq!(humanize_powershell_output("#< CLIXML"), "");
+            assert_eq!(
+                humanize_powershell_output(
+                    "#< CLIXML\n<Objs Version=\"1.1.0.1\"><Obj S=\"progress\""
+                ),
+                ""
+            );
+            // `_x` 后面不是合法转义时原样保留，不吞字符。
+            assert_eq!(clixml_unescape("a_x000G_b"), "a_x000G_b");
+            assert_eq!(clixml_unescape("a_x000A_b"), "a\nb");
+        }
+
+        #[test]
+        fn plain_output_is_returned_verbatim() {
+            let plain = "npm error code EACCES\nnpm error syscall mkdir";
+            assert_eq!(humanize_powershell_output(plain), plain);
+            assert_eq!(humanize_powershell_output(""), "");
+        }
+
+        #[test]
+        fn lifecycle_failure_detail_prefers_humanized_stderr() {
+            // 端到端：finish_lifecycle_output 不许把 CLIXML 塞进错误详情。
+            let output = std::process::Output {
+                status: exit_status_with_code(1),
+                stdout: Vec::new(),
+                stderr: REPORTED_STDERR.as_bytes().to_vec(),
+            };
+            let err = finish_lifecycle_output(&output).unwrap_err();
+            assert!(err.contains("'omp' 不是内部或外部命令"), "{err}");
+            assert!(!err.contains("<Objs"), "{err}");
+        }
+
+        /// 造一个"失败"的退出状态：跨平台构造 `ExitStatus` 没有稳定 API，用真实子进程
+        /// 拿到平台原生状态，避免平台差异化的构造 hack。
+        fn exit_status_with_code(code: i32) -> std::process::ExitStatus {
+            #[cfg(target_os = "windows")]
+            let mut cmd = {
+                let mut c = std::process::Command::new("cmd");
+                c.arg("/C").arg(format!("exit {code}"));
+                c
+            };
+            #[cfg(not(target_os = "windows"))]
+            let mut cmd = {
+                let mut c = std::process::Command::new("sh");
+                c.arg("-c").arg(format!("exit {code}"));
+                c
+            };
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("spawn exit helper")
+        }
+    }
+
     /// Windows-only 锚定升级回归(等价类压缩到 3 种 idiom:volta/pnpm/npm)。整块通过
     /// `cfg(target_os = "windows")` gate,在 macOS/Linux 上不参与 cargo test;Windows
     /// CI 跑全套验证。tempdir 模拟 sibling 入口存在/不存在,锁定"扩展名顺序优先级 +
@@ -5690,6 +6023,37 @@ mod tests {
             let cmd = static_fallback_command("opencode");
             assert_eq!(cmd, "npm i -g opencode-ai@latest");
             assert!(!cmd.contains("opencode upgrade"));
+        }
+
+        #[test]
+        fn omp_windows_anchors_absolute_path_then_official_installer() {
+            // 2026-09-23 用户报障的形态：omp 经 bun 全局装在 `~/.bun/bin`，GUI 进程 PATH
+            // 里没有它 → 裸 `omp update` 以「'omp' 不是内部或外部命令」失败。锚定后
+            // primary 用绝对路径（不再依赖 PATH），fallback 仍是官方 installer。
+            let bin_path = r"C:\Users\me\.bun\bin\omp.exe";
+            let cmd = anchored_command_from_paths("omp", bin_path, bin_path)
+                .expect("omp must anchor to its own binary path");
+            let expected_prefix = format!(
+                "{} update || powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ",
+                expect_quoted_path(bin_path)
+            );
+            assert!(cmd.starts_with(&expected_prefix), "{cmd}");
+            // fallback 是 powershell.exe（不是 .cmd/.bat），不加 `call`——与 agy/hermes 同约定。
+            assert!(!cmd.contains("call powershell"), "{cmd}");
+            // 绝不能退化成裸 `omp`：那正是这次报障的形态。
+            assert!(!cmd.starts_with("omp update"), "{cmd}");
+        }
+
+        #[test]
+        fn omp_windows_anchoring_survives_path_with_spaces() {
+            // CLI 装在含空格目录时，`<绝对路径> update` 必须带引号，否则 cmd 会把
+            // 路径截断成第一个空格（`C:\Program` 不是可执行文件）。
+            let bin_path = r"C:\Program Files\Oh My Pi\omp.exe";
+            let cmd = anchored_command_from_paths("omp", bin_path, bin_path).unwrap();
+            assert!(
+                cmd.starts_with(&format!("\"{bin_path}\" update || powershell")),
+                "{cmd}"
+            );
         }
 
         #[test]
@@ -5893,6 +6257,52 @@ mod tests {
     #[cfg(target_os = "windows")]
     mod windows_helpers {
         use super::super::*;
+
+        /// 执行链路（`run_tool_lifecycle_silently`）用 `effective_path_string()` 作为
+        /// 子进程 PATH，前提是它**至少包含进程自身 PATH 的每一段**——否则"补齐"反而会
+        /// 丢掉继承来的目录（例如 MSI 自更新后由安装器给的那份 PATH）。
+        #[test]
+        fn effective_path_string_keeps_every_process_segment() {
+            let merged = effective_path_string();
+            let merged_segments: Vec<String> = merged
+                .split(';')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            for segment in std::env::var("PATH").unwrap_or_default().split(';') {
+                let segment = segment.trim().to_ascii_lowercase();
+                if segment.is_empty() {
+                    continue;
+                }
+                assert!(
+                    merged_segments.contains(&segment),
+                    "process PATH segment dropped: {segment}"
+                );
+            }
+            // 注册表里的用户 PATH 也必须在（这正是修掉「探测得到、升级找不到」的关键）。
+            if let Some(user_path) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+                .open_subkey("Environment")
+                .and_then(|k| k.get_value::<String, &str>("Path"))
+                .ok()
+            {
+                for segment in user_path.split(';') {
+                    let expanded = expand_env_chars(segment).trim().to_ascii_lowercase();
+                    if expanded.is_empty() {
+                        continue;
+                    }
+                    assert!(
+                        merged_segments.contains(&expanded),
+                        "registry user PATH segment dropped: {expanded}"
+                    );
+                }
+            }
+            // 去重后不应出现重复段（重复会让 PATH 变长且无意义）。
+            let mut unique = merged_segments.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(unique.len(), merged_segments.len(), "{merged}");
+        }
 
         #[test]
         fn win_quote_clean_path_stays_bare() {
@@ -6189,7 +6599,9 @@ mod tests {
                 )
                 .unwrap();
                 assert!(
-                    win.starts_with("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "),
+                    win.starts_with(
+                        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "
+                    ),
                     "windows install should be the encoded official script: {win}"
                 );
             }
@@ -6228,6 +6640,45 @@ mod tests {
                 assert!(
                     !win.contains("call powershell"),
                     "powershell.exe fallback must not be wrapped in call: {win}"
+                );
+            }
+        }
+
+        #[test]
+        fn omp_static_update_chains_cli_update_before_installer() {
+            // 静态兜底（枚举不到任何安装时）保持「裸 <工具> update || 官方 installer」：
+            // 这种情况下 omp 本来就没装，自升级必然失败，真正干活的是 installer。
+            // 枚举到安装时由 `anchored_command_from_paths` 的 omp 分支锚定绝对路径
+            // （Windows 版有本地回归：`omp_windows_anchors_absolute_path_then_official_installer`）。
+            let posix = tool_action_shell_command_for_shell(
+                "omp",
+                ToolLifecycleAction::Update,
+                LifecycleCommandShell::Posix,
+            )
+            .unwrap();
+            assert!(
+                posix.starts_with(
+                    "omp update || bash -c 'tmp=$(mktemp) && curl -fsSL https://omp.sh/install"
+                ),
+                "posix update should chain CLI update before installer: {posix}"
+            );
+            assert_eq!(official_update_args("omp"), Some("update"));
+
+            #[cfg(target_os = "windows")]
+            {
+                // 静态链保持历史形态（经 `chain_update_commands` → `call powershell`）；
+                // 锚定链才是 v1.1.3 新增的 powershell 直连形态。
+                let win = tool_action_shell_command_for_shell(
+                    "omp",
+                    ToolLifecycleAction::Update,
+                    LifecycleCommandShell::WindowsBatch,
+                )
+                .unwrap();
+                assert!(
+                    win.starts_with(
+                        "omp update || call powershell -NoProfile -ExecutionPolicy Bypass"
+                    ),
+                    "windows update should chain CLI update before installer: {win}"
                 );
             }
         }
@@ -6270,6 +6721,22 @@ mod tests {
                 "/Users/me/.local/share/claude/versions/2.1.146",
             );
             assert_eq!(cmd.as_deref(), Some("/Users/me/.local/bin/claude update"));
+        }
+
+        #[test]
+        fn omp_anchored_update_uses_absolute_path_then_installer() {
+            // 与 Windows 版同形（该版有本地可跑的回归，见 `anchored_upgrade_windows`）：
+            // omp 没有 npm 包可锚，不锚定就退化成裸 `omp update`，而 GUI 进程
+            // （launchd 给的窄 PATH）里查不到它 —— 升级必失败。
+            let cmd = anchored_command_from_paths(
+                "omp",
+                "/Users/me/.bun/bin/omp",
+                "/Users/me/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js",
+            );
+            assert_eq!(
+                cmd.as_deref(),
+                Some(format!("/Users/me/.bun/bin/omp update || {OMP_INSTALL_UNIX}").as_str())
+            );
         }
 
         #[test]

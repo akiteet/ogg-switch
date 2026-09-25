@@ -26,6 +26,15 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 
 /**
  * Oh My Pi 的分类映射到通用 ProviderCategory，供列表分组/样式复用。
+ *
+ * - subscription → official（OAuth 内置，卡片走 OmpQuotaFooter）
+ * - api / gateway → aggregator（内置 API Key；gateway 仅旧数据读取兼容）
+ * - common → third_party（OGG 增补的常见供应商，如混元、聚合站模板）
+ * - custom → custom（用户自建非预设供应商）
+ * - local → custom（本地引擎）
+ *
+ * 注意：内置 api-key 不能映射成 official——那会让 ProviderCard 误挂
+ * OmpQuotaFooter 并隐藏「配置用量」入口。
  */
 const ompCategoryToProviderCategory = (
   category: OmpProviderCategory,
@@ -36,6 +45,10 @@ const ompCategoryToProviderCategory = (
     case "api":
     case "gateway":
       return "aggregator";
+    case "common":
+      return "third_party";
+    case "custom":
+      return "custom";
     case "local":
       return "custom";
   }
@@ -55,10 +68,20 @@ const ompProviderToProvider = (provider: OmpProviderConfig): Provider => ({
   icon: provider.icon,
   sortIndex: provider.sortIndex ?? undefined,
   // ompInConfig 供 ProviderList 判定成员状态（库条目显示「添加」）
-  // usage_script 真源在 omp meta store，合入 meta 供用量查询体系使用
+  // usageScript 真源在 omp meta store。后端 `OmpProviderConfig` 带
+  // `#[serde(rename_all = "camelCase")]`，线格式键名就是 `usageScript`；这里映射成
+  // 通用 Provider.meta 的 snake_case `usage_script`（与 `ProviderMeta` 的 SQLite
+  // 线格式一致），供 UsageFooter / UsageScriptModal 使用。
+  // **这里曾误读 snake_case，导致 OMP 卡片用量区从未渲染**（v1.1.3 修正）。
+  // ompOauthProviderId：OAuth 条目的凭据库 id（例如 openai-codex），与额度行
+  // `get_omp_quota_windows().provider` 对得上；列表 id 是 OGG 本地 meta key
+  // （openai），两者不同（与 OmpRoleManager 的 providerRefId 同一约定）。
   meta: {
     ompInConfig: provider.inConfig !== false,
-    ...(provider.usage_script ? { usage_script: provider.usage_script } : {}),
+    ...(provider.usageScript ? { usage_script: provider.usageScript } : {}),
+    ...(provider.type === "oauth"
+      ? { ompOauthProviderId: provider.oauthProviderId ?? provider.id }
+      : {}),
   },
 });
 

@@ -22,6 +22,7 @@ import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
 import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
 import CodexOauthQuotaFooter from "@/components/CodexOauthQuotaFooter";
 import XaiOauthQuotaFooter from "@/components/XaiOauthQuotaFooter";
+import OmpQuotaFooter from "@/components/OmpQuotaFooter";
 import { PROVIDER_TYPES, TEMPLATE_TYPES } from "@/config/constants";
 import { ProviderHealthBadge } from "@/components/providers/ProviderHealthBadge";
 import { FailoverPriorityBadge } from "@/components/providers/FailoverPriorityBadge";
@@ -33,6 +34,7 @@ import { resolveManagedAccountId } from "@/lib/authBinding";
 import {
   resolveCodexOfficialIdentity,
   supportsOfficialProxyTakeover,
+  supportsOfficialSubscriptionQuota,
   providerNeedsRouting,
 } from "@/utils/providerCapabilities";
 import { useProviderHealth } from "@/lib/query/failover";
@@ -257,12 +259,18 @@ export function ProviderCard({
     provider.meta?.usage_script?.enabled ?? isBoundCodexOfficial;
   const isOfficial = isOfficialProvider(provider, appId);
   const supportsOfficialSubscription =
-    isOfficial && ["claude", "codex", "gemini", "grokbuild"].includes(appId);
+    isOfficial && supportsOfficialSubscriptionQuota(appId);
   const isOfficialSubscriptionUsage =
     provider.meta?.usage_script?.templateType ===
     TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
+  // 官方额度（订阅套餐）对官方类供应商**默认启用**：后端能按 app 自己判断凭据与额度，
+  // 不该要求用户先手动配一个 official_subscription 脚本才肯显示——此前 Grok/Claude
+  // 这类官方卡片因此长期「什么都没有，也看不出为什么」。显式
+  // `usage_script.enabled === false`（用量弹窗里关掉开关）视为主动关闭，保留逃生口。
+  const officialSubscriptionDisabledByUser =
+    provider.meta?.usage_script?.enabled === false;
   const officialSubscriptionEnabled =
-    supportsOfficialSubscription && usageEnabled && isOfficialSubscriptionUsage;
+    supportsOfficialSubscription && !officialSubscriptionDisabledByUser;
   // 官方判定只认显式 category === "official"（SSOT），不回退 isOfficial 的空字段启发式。
   // 理由（此判定曾在「纯 category ↔ category+isOfficial 回退」间反复，结论钉死于此）：
   //  1) 封号保护是高代价决策，不该建立在「base_url/key 缺失」这种脆弱信号上——它无法区分
@@ -288,6 +296,8 @@ export function ProviderCard({
       : provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
   // xAI OAuth (SuperGrok 反代)：额度经自管 OAuth token 自动显示，与 codex_oauth 同构
   const isXaiOauth = provider.meta?.providerType === PROVIDER_TYPES.XAI_OAUTH;
+  // OMP 的 OAuth/订阅类条目（后端合成为 category=subscription → official）
+  const isOmpOfficial = appId === "omp" && isOfficial;
   // 统一权威谓词（详见 providerNeedsRouting）：以 providerType 为准，不受
   // apiFormat 被改动/缺省影响。此 badge 仅在 Codex 视图渲染，故加 appId 守卫。
   const codexNeedsRouting =
@@ -593,6 +603,11 @@ export function ProviderCard({
                   inline={true}
                   isCurrent={isCurrent}
                 />
+              ) : isOmpOfficial ? (
+                // OMP 的 OAuth 条目（category=subscription→official）额度来自 OMP 自己
+                // 记录的配额窗口（本地 agent.db），不走 `get_subscription_quota`
+                //（omp 不在后端白名单），所以放在 official 分支**之前**单独渲染。
+                <OmpQuotaFooter provider={provider} inline={true} />
               ) : isOfficial ? (
                 officialSubscriptionEnabled ? (
                   <SubscriptionQuotaFooter
@@ -671,10 +686,13 @@ export function ProviderCard({
                   : undefined
               }
               onConfigureUsage={
+                // OMP 的 OAuth 条目额度走 OmpQuotaFooter（本地配额窗口），没有
+                // 可配置的用量脚本 → 不给配置入口
                 (isOfficial && !supportsOfficialSubscription) ||
                 isCopilot ||
                 (isCodexOauth && !isBoundCodexOfficial) ||
-                isXaiOauth
+                isXaiOauth ||
+                isOmpOfficial
                   ? undefined
                   : () => onConfigureUsage(provider)
               }

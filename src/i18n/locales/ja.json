@@ -67,7 +67,15 @@
     "guideReExtract": "新しいプラグインや Hook をインストールした場合は、共通設定を再抽出して他のプロバイダーに同期してください。",
     "guideReassurance": "ご安心ください：元の設定はデフォルトプロバイダーに安全に保存されており、失われることはありません。",
     "emptyTitle": "共通設定スニペットがまだありません",
-    "emptyHint": "下の「編集内容から抽出」ボタンをクリックして、現在の設定から再利用可能な部分を抽出してください"
+    "emptyHint": "下の「編集内容から抽出」ボタンをクリックして、現在の設定から再利用可能な部分を抽出してください",
+    "fieldName": {
+      "config": "設定",
+      "snippet": "共通設定スニペット",
+      "extracted": "抽出した設定"
+    },
+    "mustBeObject": "{{field}}は JSON オブジェクトである必要があります",
+    "invalidJson": "{{field}} の JSON 形式が不正です。構文を確認してください",
+    "parseFailed": "設定 JSON の解析に失敗したため、共通設定を適用できません"
   },
   "claudeConfig": {
     "configLabel": "Claude Code settings.json (JSON) *",
@@ -142,7 +150,6 @@
     "addOpenCodeProvider": "OpenCode プロバイダーを追加",
     "addToConfig": "追加",
     "removeFromConfig": "削除",
-    "setAsDefault": "デフォルトに設定",
     "isDefault": "現在のデフォルト",
     "inConfig": "追加済み",
     "addProviderHint": "一覧にすばやく切り替えられるよう、ここに情報を入力してください。",
@@ -199,7 +206,8 @@
         "defaultModelHint": "agy 設定の model フィールドに書き込みます（このプロバイダーへ切り替える際に適用）。右のボタンで agy カタログから候補を取得できます。空欄なら agy での選択を変更しません。",
         "extraEnvLabel": "追加環境変数（任意）",
         "extraEnvHint": "1 行に KEY=VALUE を1件ずつ。切り替え時に永続環境変数へ書き込み、空値で削除。",
-        "extraEnvInvalid": "追加環境変数の書式エラー：1 行に KEY=VALUE。キーは英数字と _ のみ"
+        "extraEnvInvalid": "追加環境変数の書式エラー：1 行に KEY=VALUE。キーは英数字と _ のみ",
+        "modelListEmpty": "agy からモデルカタログを取得できませんでした（agy がインストール済みで資格情報が設定されているか確認してください）"
       },
       "gemini": {
         "model": "モデル",
@@ -208,7 +216,10 @@
         "apiKeyPlaceholder": "Gemini API Key を入力"
       }
     },
-    "duplicateLiveIdsLoadFailed": "設定内のプロバイダー識別子を読み込めませんでした。設定を修正してから再度お試しください"
+    "duplicateLiveIdsLoadFailed": "設定内のプロバイダー識別子を読み込めませんでした。設定を修正してから再度お試しください",
+    "duplicateParseFailed": "複製に失敗しました：プロバイダー設定を解析できませんでした",
+    "duplicatedToLibrary": "プロバイダーライブラリにコピーしました（未追加）。「追加」をクリックすると有効になります",
+    "duplicateFailed": "プロバイダーの複製に失敗しました"
   },
   "claudeCode": {
     "needsRouting": "ルーティングが必要",
@@ -477,6 +488,11 @@
           "debug": "SSE ストリームとリクエスト/レスポンスを含む詳細情報",
           "trace": "すべてのログ、最も詳細"
         }
+      },
+      "envBackup": {
+        "title": "環境変数バックアップ",
+        "description": "競合する環境変数の削除時に作成されたバックアップ。比較して復元できます",
+        "open": "表示と復元"
       }
     },
     "language": "言語",
@@ -924,7 +940,8 @@
       "defaultCostMultiplierRequired": "デフォルト倍率は必須です",
       "defaultCostMultiplierInvalid": "デフォルト倍率の形式が正しくありません"
     },
-    "saveFailedGeneric": "保存に失敗しました。もう一度お試しください"
+    "saveFailedGeneric": "保存に失敗しました。もう一度お試しください",
+    "oneClickInstall": "ワンクリックインストール"
   },
   "apps": {
     "claude": "Claude",
@@ -940,6 +957,115 @@
     "openclaw": "OpenClaw",
     "hermes": "Hermes",
     "pi": "Pi"
+  },
+  "omp": {
+    "groupOAuth": "OAuth ログイン（omp 内蔵）",
+    "groupApiKey": "API Key（omp 内蔵）",
+    "groupCommon": "定番プロバイダー",
+    "roleManager": {
+      "title": "ロール管理",
+      "ompBuiltinProvider": "OMP 内蔵",
+      "roleNameRequired": "ロール名を入力してください",
+      "roleNameNoWhitespace": "ロール名にスペースは使用できません",
+      "roleNameDuplicate": "このロールは既に存在します",
+      "saveError": "ロールの保存に失敗しました",
+      "deleteError": "ロールの削除に失敗しました",
+      "groupChat": "チャットロール",
+      "groupChatHint": "デフォルトでチャットモデルにルーティング",
+      "groupKind": "種類ロール（kind）",
+      "groupKindHint": "画像生成 / ウェブ検索 / 音声合成 / 音声認識 / 判定",
+      "groupCustom": "カスタムロール",
+      "groupCustomHint": "config.yml のカスタム modelRoles キー",
+      "description": "{{count}} 個のロールにモデルを割り当てます（内蔵ロール + カスタムロール）",
+      "configured": "設定済み",
+      "addCustomRole": "カスタムロールを追加",
+      "role": "ロール",
+      "assignment": "割り当て",
+      "actions": "操作",
+      "notAssigned": "未割り当て",
+      "saveSuccess": "ロール {{role}} を保存しました",
+      "deleteSuccess": "ロール {{role}} を削除しました",
+      "editRole": "{{role}} ロールを設定",
+      "roleName": "ロール名",
+      "roleNamePlaceholder": "例：reviewer、writer",
+      "roleNameHint": "保存すると config.yml の modelRoles に書き込まれ、内蔵ロールと同じようにモデルを割り当てられます",
+      "provider": "Provider",
+      "selectProvider": "Provider を選択",
+      "model": "Model",
+      "selectModel": "Model を選択",
+      "manualModelPlaceholder": "モデル ID を手動入力（例：gpt-5.2）",
+      "loadingModels": "OMP からモデルを取得中…",
+      "kindFilteredHint": "このロールは OMP カタログで kind = {{kinds}} のモデルのみ受け付けます。このプロバイダーのカスタムモデル {{count}} 個を非表示にしています（models.yml エントリは OMP ではすべて chat 扱いのため採用されません）",
+      "manualModelHint": "このプロバイダーにはこのロールで使えるモデルがありません。モデル ID を直接入力してください（ロールは provider/model として保存されます）",
+      "thinkingLevel": "Thinking Level",
+      "thinkingLevelHelp": "Extended thinking モデルの思考の深さ",
+      "preview": "プレビュー",
+      "roleDesc": {
+        "default": "ほとんどのタスクに使える汎用モデル",
+        "smol": "簡単なタスクに向けた高速で低コストのモデル",
+        "slow": "複雑なタスクに向けた高品質な推論モデル",
+        "vision": "画像理解とビジョンタスク",
+        "plan": "計画とアーキテクチャ設計専用",
+        "commit": "Git コミットメッセージの生成",
+        "tiny": "超軽量タスク（tiny または chat モデル）",
+        "memory": "メモリや履歴圧縮などのバックグラウンド記憶タスク",
+        "task": "サブタスクの実行",
+        "advisor": "相談とアドバイス",
+        "image": "画像生成（kind: image）",
+        "web": "ウェブ検索バックエンド（kind: search）",
+        "speech": "音声合成 TTS（kind: tts）",
+        "dictation": "音声認識 STT（kind: stt）",
+        "judge": "レビュー/判定（kind: judge）"
+      }
+    },
+    "addModel": "モデルを追加",
+    "apiKey": "API Key",
+    "apiKeyHelp": "平文、環境変数 ($VAR)、secret-bridge コマンドに対応",
+    "apiProtocol": "API プロトコル",
+    "baseUrl": "Base URL",
+    "baseUrlHelp": "API サービスのベース URL",
+    "contextWindow": "コンテキストウィンドウ",
+    "customHeaders": "カスタムヘッダー（任意）",
+    "customHeadersHelp": "JSON 形式の追加 HTTP ヘッダー",
+    "displayName": "表示名（任意）",
+    "fetchNeedCreds": "まず Base URL と API Key を入力してください",
+    "fetchedFromOmp": "OMP カタログから {{count}} 個のモデルを取得しました",
+    "fetchedCount": "{{count}} 個のモデルを取得しました",
+    "importAll": "すべてインポート",
+    "importedModels": "{{count}} 個のモデルをインポートしました",
+    "maxTokens": "最大出力",
+    "models": "モデルリスト",
+    "modelsHint": "空の場合、OMP が上流から自動検出します",
+    "noModels": "モデルはまだありません",
+    "noNewModels": "インポートできる新しいモデルはありません",
+    "reasoning": "推論対応 (reasoning)",
+    "protocolInherit": "プロバイダーを継承",
+    "sendAuthHeader": "Authorization ヘッダーを送信",
+    "oauth": {
+      "accounts": "アカウント",
+      "cliMissing": "Oh My Pi CLI が見つかりません。先に omp をインストールしてください（irm https://omp.sh/install.ps1 | iex）。そうしないとログインできません。",
+      "howItWorks": "仕組み",
+      "loggedIn": "サインイン済み",
+      "notLoggedIn": "未サインイン",
+      "login": "ログイン",
+      "logout": "ログアウト",
+      "logoutDone": "ログアウトしました",
+      "loginSuccess": "ログインに成功しました",
+      "loginFailed": "OMP のログインフローを開始できませんでした",
+      "loginTimeout": "タイムアウト：ログイン完了を検出できませんでした。再試行してください",
+      "needProviderId": "まず OAuth Provider ID を入力してください",
+      "providerId": "OAuth Provider ID",
+      "providerIdFixed": "この ID は omp 認証情報カタログ（anthropic / openai-codex / xai-oauth など）で固定され、選択したプリセットに応じて自動的に決定されます",
+      "step1": "「ログイン」をクリック → ターミナルが開き omp のネイティブ OAuth フローが実行されます",
+      "step2": "ターミナル/ブラウザで認証を完了してください（ブラウザ、デバイスコード、コールバック貼り付け）",
+      "step3": "資格情報は OMP の認証情報ストアに保存され、omp CLI はすぐに使えます",
+      "step4": "このアプリが自動的にポーリングし、ログイン状態とアカウント一覧を反映します",
+      "terminalOpened": "ターミナルを開きました。OMP ウィンドウでログインを完了してください",
+      "waiting": "認証を待機中…",
+      "waitingInTerminal": "ターミナルを開きました。OMP ウィンドウで認証を完了してください…",
+      "modelsAutoDiscover": "モデルリストの設定は不要です：ログイン後、OMP がプロバイダーのモデルを自動検出し、ロール設定でそのまま選択できます。"
+    },
+    "providerConfigMissing": "プロバイダー設定の解析に失敗したため、設定に追加できません"
   },
   "pi": {
     "empty": {
@@ -1096,7 +1222,27 @@
     "defaultModelHint": "Grok Build がデフォルトでリクエストするモデルです。プリセットの更新を待たずにいつでも変更できます。",
     "advancedSectionHint": "上流フォーマット、思考機能、カスタム User-Agent の設定を含みます。Chat Completions / Anthropic Messages プロトコルを使用するプロバイダーはルーティング引き継ぎの有効化が必要です。",
     "reasoningEffortHint": "上流が low/high/max などの思考の深さの制御に対応している場合に有効化します。有効にすると思考モードも自動的にオンになり、リクエストの reasoning effort を上流の Chat パラメータに変換します。",
-    "maxOutputTokensHint": "デフォルト上限 8192 では長い回答や深い思考時に切り詰められることがあります（stop_reason=max_tokens）。この値は Anthropic 経路で max_tokens を上書きします。モデル／ゲートウェイの実際の出力上限を超えると 400 になる場合があります。空欄でデフォルトの 8192 を使用します。"
+    "maxOutputTokensHint": "デフォルト上限 8192 では長い回答や深い思考時に切り詰められることがあります（stop_reason=max_tokens）。この値は Anthropic 経路で max_tokens を上書きします。モデル／ゲートウェイの実際の出力上限を超えると 400 になる場合があります。空欄でデフォルトの 8192 を使用します。",
+    "models": {
+      "title": "モデル設定",
+      "add": "モデルを追加",
+      "empty": "モデルはまだありません",
+      "setDefault": "デフォルトに設定",
+      "isDefault": "デフォルトモデル",
+      "setDefaultHint": "デフォルトに設定",
+      "id": "モデル ID",
+      "displayName": "表示名",
+      "contextWindow": "コンテキストウィンドウ"
+    },
+    "validation": {
+      "baseUrlRequired": "Base URL は必須です",
+      "apiKeyRequired": "API Key は必須です",
+      "atLeastOneEntry": "モデルエントリが少なくとも 1 つ必要です",
+      "modelIdRequired": "モデル ID は必須です",
+      "modelIdDuplicate": "モデル ID が重複しています: {{id}}",
+      "contextWindowPositive": "モデル {{id}} のコンテキストウィンドウは正の整数である必要があります",
+      "defaultKeyNotInEntries": "デフォルトモデル {{key}} がエントリ一覧にありません"
+    }
   },
   "sessionManager": {
     "title": "セッション管理",
@@ -1379,7 +1525,19 @@
     "fetchModelsNotSupported": "このプロバイダーはモデル一覧の取得に対応していません",
     "fetchModelsEndpointNotFound": "利用可能なモデル一覧エンドポイントが見つかりません。Base URL を確認するか、プロバイダーが該当 API を公開しているかご確認ください",
     "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください",
-    "requiredFields": "プロバイダー名、API エンドポイント、API Key、モデルを入力してください"
+    "requiredFields": "プロバイダー名、API エンドポイント、API Key、モデルを入力してください",
+    "nameRequired": "プロバイダー名を入力してください",
+    "fetchModelsNeedCreds": "まず Base URL と API Key を入力してください",
+    "validationError": "設定の検証に失敗しました",
+    "saveError": "保存に失敗しました。設定を確認してください",
+    "jsonError": {
+      "invalid": "設定 JSON の形式が正しくありません",
+      "atPosition": "JSON 形式エラー：{{message}}（位置：{{position}}）",
+      "atLineColumn": "JSON 形式エラー：{{line}} 行目、{{column}} 列目",
+      "generic": "JSON 形式エラー：{{message}}"
+    },
+    "urlInvalid": "有効な URL を入力してください",
+    "configRequired": "設定内容を入力してください"
   },
   "copilot": {
     "authSection": "GitHub Copilot 認証",
@@ -1601,7 +1759,8 @@
     "reasoningGroupTitle": "思考能力",
     "reasoningSectionHint": "プリセットの供給元は自動的に設定され、カスタム供給元は名前/URL から自動推論されます。自動識別が正しくない場合のみ手動で上書きしてください。",
     "advancedSectionHint": "上流フォーマット、モデルマッピング、思考能力、カスタム User-Agent の設定を含みます。Chat Completions プロトコルを使用するプロバイダーはルーティング引き継ぎの有効化が必要です。",
-    "noCommonConfigToApply": "共通設定スニペットが空か、書き込む内容がありません"
+    "noCommonConfigToApply": "共通設定スニペットが空か、書き込む内容がありません",
+    "tomlInvalid": "TOML 形式エラー"
   },
   "geminiConfig": {
     "envFile": "環境変数 (.env)",
@@ -1899,7 +2058,8 @@
       "syncNow": "今すぐ同期"
     },
     "cacheReadCostPerMillion": "キャッシュ読み取りコスト（100万トークンあたり、USD）",
-    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）"
+    "cacheCreationCostPerMillion": "キャッシュ書き込みコスト（100万トークンあたり、USD）",
+    "refreshing": "更新中…"
   },
   "usageScript": {
     "title": "利用状況を設定",
@@ -1918,6 +2078,7 @@
     "copilotAutoAuth": "OAuth 認証を自動使用、手動設定不要",
     "tokenPlanHint": "プロバイダーのAPI KeyとBase URLを使用してToken Planクォータを自動クエリ",
     "balanceHint": "プロバイダーのAPI Keyを使用してアカウント残高を自動クエリ",
+    "balanceUnknownHint": "このドメインは内蔵残高プロバイダー一覧にありません（DeepSeek、StepFun、SiliconFlow、OpenRouter、NovitaAI のみ対応）。保存後のクエリは失敗するため、「汎用テンプレート」に切り替えてスクリプトをカスタマイズしてください。",
     "officialSubscriptionHint": "ローカル CLI の OAuth 認証情報を読み取り、公式 API でサブスクリプション枠を照会します。既定では無効で、有効化した後のみリクエストします。",
     "resetDate": "リセット日",
     "premiumRequests": "Premium リクエスト",
@@ -2179,6 +2340,14 @@
         "name": "@upstash/context7-mcp",
         "description": "最新のライブラリドキュメントとコード例を提供する Context7 ドキュメント検索ツール。キー設定で上限が拡張されます"
       }
+    },
+    "tomlError": {
+      "empty": "TOML 内容を空にすることはできません",
+      "unrecognized": "認識できない TOML 形式です。単一の MCP サーバー設定を指定するか、[mcp_servers.<id>] 形式を使用してください",
+      "configNotObject": "サーバー設定はオブジェクトである必要があります",
+      "stdioRequiresCommand": "stdio タイプの MCP サーバーには command フィールドが必要です",
+      "httpRequiresUrl": "{{type}} タイプの MCP サーバーには url フィールドが必要です",
+      "unsupportedType": "サポートされていない MCP サーバータイプ: {{type}}"
     }
   },
   "prompts": {
@@ -3127,6 +3296,8 @@
     "geminiPro": "Pro",
     "geminiFlash": "Flash",
     "geminiFlashLite": "Flash Lite",
+    "geminiFamily": "Gemini 系モデル",
+    "claudeGptFamily": "Claude / GPT 系モデル",
     "weeklyLimit": "週間",
     "monthly": "月間",
     "credits": "クレジット",
@@ -3137,6 +3308,18 @@
     "expired": "セッション期限切れ",
     "expiredHint": "{{tool}}コマンドを実行してログインを更新してください",
     "queryFailed": "クエリに失敗しました",
-    "refresh": "更新"
+    "refresh": "更新",
+    "credentialMissing": "ローカルに認証情報が見つかりません",
+    "credentialMissingHint": "先に {{tool}} でログインしてください",
+    "credentialParseError": "保存された認証情報を解析できません",
+    "noTiers": "認証情報は有効ですが、上流がクォータ枠を返しませんでした",
+    "used": "使用",
+    "remaining": "残り",
+    "upperLimit": "上限",
+    "currentPlan": "プラン",
+    "noWindowData": "このプランの使用量ウィンドウはありません"
+  },
+  "update": {
+    "checkFailed": "更新の確認に失敗しました"
   }
 }

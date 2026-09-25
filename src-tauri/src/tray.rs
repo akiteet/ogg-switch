@@ -35,6 +35,11 @@ const GEMINI_PRO_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEM
 const GEMINI_FLASH_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_FLASH];
 const GEMINI_FLASH_LITE_TIER_NAMES: &[&str] =
     &[crate::services::subscription::TIER_GEMINI_FLASH_LITE];
+// Antigravity 的两族聚合 tier（对齐其官方 UI 分组）；分组表漏掉它们时
+// `labeled_tier_parts` 会静默丢弃 → Antigravity 托盘额度空白。
+const GEMINI_FAMILY_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_GEMINI_FAMILY];
+const CLAUDE_GPT_FAMILY_TIER_NAMES: &[&str] =
+    &[crate::services::subscription::TIER_CLAUDE_GPT_FAMILY];
 const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
     ("h", H_TIER_NAMES),
     ("w", W_TIER_NAMES),
@@ -44,6 +49,8 @@ const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
     ("p", GEMINI_PRO_TIER_NAMES),
     ("f", GEMINI_FLASH_TIER_NAMES),
     ("l", GEMINI_FLASH_LITE_TIER_NAMES),
+    ("g", GEMINI_FAMILY_TIER_NAMES),
+    ("cg", CLAUDE_GPT_FAMILY_TIER_NAMES),
 ];
 
 /// 每个 app 分区的子菜单句柄，用于 usage 更新时就地改 label 而非整菜单重建。
@@ -604,7 +611,12 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             let current = app_state
                 .db
                 .get_provider_by_id(&current_id, app_type_str)?
-                .ok_or_else(|| AppError::Message(format!("供应商不存在: {current_id}")))?;
+                .ok_or_else(|| {
+                    AppError::Message(crate::error::pick(
+                        &format!("供应商不存在: {current_id}"),
+                        &format!("Provider not found: {current_id}"),
+                    ))
+                })?;
             if !crate::proxy::provider_router::provider_supports_failover(app_type_str, &current) {
                 return Err(AppError::Message(
                     "Codex Official 账号卡不支持自动故障转移".to_string(),
@@ -644,7 +656,10 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             log::info!("[Tray] Auto 模式：启动代理服务");
             if let Err(e) = futures::executor::block_on(proxy_service.start()) {
                 log::error!("[Tray] 启动代理服务失败: {e}");
-                return Err(AppError::Message(format!("启动代理服务失败: {e}")));
+                return Err(AppError::Message(crate::error::pick(
+                    &format!("启动代理服务失败: {e}"),
+                    &format!("Failed to start proxy service: {e}"),
+                )));
             }
         }
 
@@ -654,7 +669,10 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             futures::executor::block_on(proxy_service.set_takeover_for_app(app_type_str, true))
         {
             log::error!("[Tray] 执行接管失败: {e}");
-            return Err(AppError::Message(format!("执行接管失败: {e}")));
+            return Err(AppError::Message(crate::error::pick(
+                &format!("执行接管失败: {e}"),
+                &format!("Failed to take over: {e}"),
+            )));
         }
 
         // 3) 设置 auto_failover_enabled = true
@@ -667,8 +685,9 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             proxy_service.switch_proxy_target(app_type_str, &p1_provider_id),
         ) {
             log::error!("[Tray] Auto 模式切换到队列 P1 失败: {e}");
-            return Err(AppError::Message(format!(
-                "Auto 模式切换到队列 P1 失败: {e}"
+            return Err(AppError::Message(crate::error::pick(
+                &format!("Auto 模式切换到队列 P1 失败: {e}"),
+                &format!("Failed to switch Auto mode to queue P1: {e}"),
             )));
         }
 
@@ -764,8 +783,14 @@ pub fn create_tray_menu(
 
     // 顶部：打开主界面 / 打开官方网站
     let show_main_item =
-        MenuItem::with_id(app, "show_main", tray_texts.show_main, true, None::<&str>)
-            .map_err(|e| AppError::Message(format!("创建打开主界面菜单失败: {e}")))?;
+        MenuItem::with_id(app, "show_main", tray_texts.show_main, true, None::<&str>).map_err(
+            |e| {
+                AppError::Message(crate::error::pick(
+                    &format!("创建打开主界面菜单失败: {e}"),
+                    &format!("Failed to create the main-window menu item: {e}"),
+                ))
+            },
+        )?;
     let open_website_item = MenuItem::with_id(
         app,
         "open_website",
@@ -773,7 +798,12 @@ pub fn create_tray_menu(
         true,
         None::<&str>,
     )
-    .map_err(|e| AppError::Message(format!("创建打开官方网站菜单失败: {e}")))?;
+    .map_err(|e| {
+        AppError::Message(crate::error::pick(
+            &format!("创建打开官方网站菜单失败: {e}"),
+            &format!("Failed to create the website menu item: {e}"),
+        ))
+    })?;
     menu_builder = menu_builder
         .item(&show_main_item)
         .item(&open_website_item)
@@ -800,7 +830,10 @@ pub fn create_tray_menu(
             let label = format!("{} {}", section.header_label, tray_texts.no_providers_label);
             let empty_item = MenuItem::with_id(app, section.empty_id, &label, false, None::<&str>)
                 .map_err(|e| {
-                    AppError::Message(format!("创建{}空提示失败: {e}", section.log_name))
+                    AppError::Message(crate::error::pick(
+                        &format!("创建{}空提示失败: {e}", section.log_name),
+                        &format!("Failed to create the {} empty hint: {e}", section.log_name),
+                    ))
                 })?;
             menu_builder = menu_builder.item(&empty_item);
         } else {
@@ -854,13 +887,19 @@ pub fn create_tray_menu(
                     None::<&str>,
                 )
                 .map_err(|e| {
-                    AppError::Message(format!("创建{}菜单项失败: {e}", section.log_name))
+                    AppError::Message(crate::error::pick(
+                        &format!("创建{}菜单项失败: {e}", section.log_name),
+                        &format!("Failed to create the {} menu item: {e}", section.log_name),
+                    ))
                 })?;
                 submenu_builder = submenu_builder.item(&item);
             }
 
             let submenu = submenu_builder.build().map_err(|e| {
-                AppError::Message(format!("构建{}子菜单失败: {e}", section.log_name))
+                AppError::Message(crate::error::pick(
+                    &format!("构建{}子菜单失败: {e}", section.log_name),
+                    &format!("Failed to build the {} submenu: {e}", section.log_name),
+                ))
             })?;
             section_handles.insert(section.app_type.clone(), submenu.clone());
             menu_builder = menu_builder.item(&submenu);
@@ -885,12 +924,20 @@ pub fn create_tray_menu(
                         snapshot.current_provider_id == *id,
                         None::<&str>,
                     )
-                    .map_err(|e| AppError::Message(format!("创建 Oh My Pi 菜单项失败: {e}")))?;
+                    .map_err(|e| {
+                        AppError::Message(crate::error::pick(
+                            &format!("创建 Oh My Pi 菜单项失败: {e}"),
+                            &format!("Failed to create the Oh My Pi menu item: {e}"),
+                        ))
+                    })?;
                     submenu_builder = submenu_builder.item(&item);
                 }
-                let submenu = submenu_builder
-                    .build()
-                    .map_err(|e| AppError::Message(format!("构建 Oh My Pi 子菜单失败: {e}")))?;
+                let submenu = submenu_builder.build().map_err(|e| {
+                    AppError::Message(crate::error::pick(
+                        &format!("构建 Oh My Pi 子菜单失败: {e}"),
+                        &format!("Failed to build the Oh My Pi submenu: {e}"),
+                    ))
+                })?;
                 menu_builder = menu_builder.item(&submenu).separator();
             }
             Ok(_) => {}
@@ -949,7 +996,12 @@ pub fn create_tray_menu(
                     current_profile_id == profile.id,
                     None::<&str>,
                 )
-                .map_err(|e| AppError::Message(format!("创建项目菜单项失败: {e}")))?;
+                .map_err(|e| {
+                    AppError::Message(crate::error::pick(
+                        &format!("创建项目菜单项失败: {e}"),
+                        &format!("Failed to create the projects menu item: {e}"),
+                    ))
+                })?;
                 scope_builder = scope_builder.item(&item);
             }
             let none_item = CheckMenuItem::with_id(
@@ -960,12 +1012,23 @@ pub fn create_tray_menu(
                 current_profile_id.is_empty(),
                 None::<&str>,
             )
-            .map_err(|e| AppError::Message(format!("创建不使用项目菜单项失败: {e}")))?;
-            let scope_submenu = scope_builder
-                .separator()
-                .item(&none_item)
-                .build()
-                .map_err(|e| AppError::Message(format!("构建项目分组子菜单失败: {e}")))?;
+            .map_err(|e| {
+                AppError::Message(crate::error::pick(
+                    &format!("创建不使用项目菜单项失败: {e}"),
+                    &format!("Failed to create the no-project menu item: {e}"),
+                ))
+            })?;
+            let scope_submenu =
+                scope_builder
+                    .separator()
+                    .item(&none_item)
+                    .build()
+                    .map_err(|e| {
+                        AppError::Message(crate::error::pick(
+                            &format!("构建项目分组子菜单失败: {e}"),
+                            &format!("Failed to build the project-group submenu: {e}"),
+                        ))
+                    })?;
             scope_submenus.push(scope_submenu);
         }
 
@@ -975,9 +1038,12 @@ pub fn create_tray_menu(
             for scope_submenu in &scope_submenus {
                 profiles_builder = profiles_builder.item(scope_submenu);
             }
-            let profiles_submenu = profiles_builder
-                .build()
-                .map_err(|e| AppError::Message(format!("构建项目子菜单失败: {e}")))?;
+            let profiles_submenu = profiles_builder.build().map_err(|e| {
+                AppError::Message(crate::error::pick(
+                    &format!("构建项目子菜单失败: {e}"),
+                    &format!("Failed to build the project submenu: {e}"),
+                ))
+            })?;
             menu_builder = menu_builder.item(&profiles_submenu).separator();
         }
     }
@@ -990,7 +1056,12 @@ pub fn create_tray_menu(
         crate::lightweight::is_lightweight_mode(),
         None::<&str>,
     )
-    .map_err(|e| AppError::Message(format!("创建轻量模式菜单失败: {e}")))?;
+    .map_err(|e| {
+        AppError::Message(crate::error::pick(
+            &format!("创建轻量模式菜单失败: {e}"),
+            &format!("Failed to create the lightweight-mode menu: {e}"),
+        ))
+    })?;
 
     menu_builder = menu_builder.item(&lightweight_item).separator();
 
@@ -1617,6 +1688,29 @@ mod tests {
         let quota = make_quota("gemini", true, vec![tier("gemini_flash_lite", 80.0)]);
         let s = format_subscription_summary(&quota).expect("should format");
         assert!(s.contains("l80%"), "expected l80% in {s}");
+    }
+
+    #[test]
+    fn antigravity_family_tiers_render_in_tray() {
+        // Antigravity 的两族聚合 tier（gemini_family / claude_gpt_family）必须能进
+        // 托盘——分组表漏掉时 labeled_tier_parts 静默丢弃，托盘额度直接空白。
+        let quota = make_quota(
+            "antigravity",
+            true,
+            vec![
+                tier(crate::services::subscription::TIER_GEMINI_FAMILY, 13.7),
+                tier(crate::services::subscription::TIER_CLAUDE_GPT_FAMILY, 0.0),
+            ],
+        );
+        let s = format_subscription_summary(&quota).expect("should format");
+        assert!(s.contains("g14%"), "expected g14% in {s}");
+        assert!(s.contains("cg0%"), "expected cg0% in {s}");
+        // 原始 tier 名不许泄漏进托盘文本
+        assert!(!s.contains("gemini_family"), "raw tier name leaked: {s}");
+        assert!(
+            !s.contains("claude_gpt_family"),
+            "raw tier name leaked: {s}"
+        );
     }
 
     #[test]

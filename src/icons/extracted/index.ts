@@ -73,6 +73,8 @@ import _sakana from "./sakana.ico";
 import _synthetic from "./synthetic.ico";
 import _aiand from "./aiand.png";
 import _antigravity from "./antigravity.png";
+import _commandcode from "./commandcode.png";
+import _abliteration from "./abliteration.ico";
 
 export const icons: Record<string, string> = {
   // omp 预设品牌图标（key 与 ompProviderPresets 的 icon 字段一一对应）
@@ -207,6 +209,8 @@ export const iconUrls: Record<string, string> = {
   synthetic: _synthetic,
   aiand: _aiand,
   antigravity: _antigravity,
+  commandcode: _commandcode,
+  abliteration: _abliteration,
   a6api: _a6api,
   apikeyfun: _apikeyfun,
   apinebula: _apinebula,

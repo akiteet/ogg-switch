@@ -6,6 +6,7 @@ import type { ProviderMeta } from "@/types";
 import type { SubscriptionQuota } from "@/types/subscription";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { PROVIDER_TYPES } from "@/config/constants";
+import { supportsOfficialSubscriptionQuota } from "@/utils/providerCapabilities";
 import { resolveDisplayUsage, type LastGoodSnapshot } from "./queries";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
@@ -90,8 +91,7 @@ export function useSubscriptionQuota(
   const query = useQuery({
     queryKey: subscriptionKeys.quota(appId),
     queryFn: () => subscriptionApi.getQuota(appId),
-    enabled:
-      enabled && ["claude", "codex", "gemini", "grokbuild"].includes(appId),
+    enabled: enabled && supportsOfficialSubscriptionQuota(appId),
     refetchInterval,
     refetchIntervalInBackground: Boolean(refetchInterval),
     refetchOnWindowFocus: Boolean(refetchInterval),

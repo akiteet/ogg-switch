@@ -193,6 +193,10 @@ export interface ProviderMeta {
   costMultiplier?: string;
   // OMP 库模式成员标记：false = 仅存于库（卡片显示「添加」），true/缺省 = 已在配置
   ompInConfig?: boolean;
+  // OMP OAuth 条目的凭据库 id（例如 openai-codex）。列表 id 是 OGG 本地 meta key
+  // （openai），而 OMP 额度行（get_omp_quota_windows 的 provider）用的是凭据库 id
+  // —— 卡片匹配额度必须走这个字段（与 OmpRoleManager 的 providerRefId 同一约定）
+  ompOauthProviderId?: string;
   // 供应商计费模式来源
   pricingModelSource?: string;
   // API 格式（Claude / Codex 供应商使用）

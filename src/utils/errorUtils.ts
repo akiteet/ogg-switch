@@ -113,12 +113,14 @@ export const translateMcpBackendError = (
     return t("mcp.wizard.urlRequired");
   }
 
-  // 文件解析/序列化
+  // 文件解析/序列化（后端与前端 tomlUtils 已双语化，匹配需覆盖 zh/en 两口径）
   if (
     msg.includes("解析 ~/.claude.json 失败") ||
     msg.includes("解析 config.toml 失败") ||
     msg.includes("无法识别的 TOML 格式") ||
-    msg.includes("TOML 内容不能为空")
+    msg.includes("Unrecognized TOML format") ||
+    msg.includes("TOML 内容不能为空") ||
+    msg.includes("TOML content cannot be empty")
   ) {
     return t("mcp.error.tomlInvalid");
   }

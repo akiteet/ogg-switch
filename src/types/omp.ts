@@ -15,8 +15,21 @@ export type OmpProviderType = "oauth" | "api-key" | "gateway" | "local";
 
 /**
  * Provider category for UI grouping
+ *
+ * - `subscription`：OAuth 登录的 omp 内置供应商（凭据库 /login）
+ * - `api`：omp 内置 API Key 供应商（providers.md 环境变量表内的官方/聚合条目）
+ * - `common`：常见供应商——OGG 增补预设，不在 omp 官方 providers.md 清单里
+ *   （如腾讯混元、豆包、one-api/new-api 模板）
+ * - `custom`：用户自建的非预设供应商
+ * - `gateway` / `local`：legacy 与本地引擎（`gateway` 仅旧数据读取兼容，新数据不再产生）
  */
-export type OmpProviderCategory = "subscription" | "api" | "gateway" | "local";
+export type OmpProviderCategory =
+  | "subscription"
+  | "api"
+  | "common"
+  | "custom"
+  | "gateway"
+  | "local";
 
 /**
  * API protocol for model communication
@@ -126,8 +139,11 @@ interface OmpProviderBase {
   // 库模式成员标记：true = 已在配置（显示「移除」）；false = 仅存于库（显示「添加」）。
   // 由后端 load 时按条目来源计算，不写 models.yml
   inConfig?: boolean;
-  // 用量查询脚本配置（真源在 OGG meta store，仅 GUI 传输层，不写 models.yml）
-  usage_script?: UsageScript | null;
+  // 用量查询脚本配置（真源在 OGG meta store，仅 GUI 传输层，不写 models.yml）。
+  // 键名必须与后端 `OmpProviderConfig`（`#[serde(rename_all = "camelCase")]`）一致：
+  // camelCase 的 `usageScript`。历史上这里写成 snake_case，导致前端永远读不到脚本、
+  // 卡片用量区恒不渲染（v1.1.3 修正）。
+  usageScript?: UsageScript | null;
 }
 
 /**
@@ -224,6 +240,12 @@ export interface OmpProviderPreset {
   envKeyName?: string; // e.g., "ANTHROPIC_API_KEY"
   // Preset models (optional)
   defaultModels?: OmpModelInfo[];
+  /**
+   * 内置/常见分层（合并 ALL_OMP_PRESETS 时统一打上）：
+   * - `builtin`：omp 官方 providers.md 列出的内置供应商（OAuth 组以 omp 源码 kdl 为准）
+   * - `common`：OGG 增补的常见供应商（providers.md 未收录，如腾讯混元、聚合站模板）
+   */
+  tier?: "builtin" | "common";
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -18,8 +18,7 @@ pub fn env_vars_in_use(
     var_names: Vec<String>,
 ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
     use crate::services::env_manager::EnvVarUsage;
-    let mut out: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     let wanted: Vec<String> = var_names.iter().map(|n| n.to_uppercase()).collect();
     if wanted.is_empty() {
         return Ok(out);
@@ -37,7 +36,9 @@ pub fn env_vars_in_use(
                 .and_then(serde_json::Value::as_object);
             let Some(env) = env else { continue };
             for (key, value) in env {
-                let Some(value) = value.as_str() else { continue };
+                let Some(value) = value.as_str() else {
+                    continue;
+                };
                 if value.trim().is_empty() {
                     continue;
                 }

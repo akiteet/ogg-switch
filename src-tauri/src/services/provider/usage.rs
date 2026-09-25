@@ -98,6 +98,11 @@ pub(crate) async fn execute_and_format_usage_result(
 /// `Provider::resolve_usage_credentials` — the same per-app resolver the
 /// native balance/coding-plan path and the frontend `getProviderCredentials`
 /// use, so `{{apiKey}}`/`{{baseUrl}}` match what the UI shows for them.
+///
+/// OMP 的 apiKey 可以是 secret-bridge 形态（`$ENV` / `${ENV}` / `!cmd` / `$(cmd)`，
+/// 与 `commands/omp.rs::resolve_secret_form` 同一约定）；models.yml 与用量脚本共用
+/// 这套形态，查询时必须解析成真实值——否则 `$VAR` 字面量会被塞进
+/// `Authorization: Bearer`，上游必然 401（v1.1.3 修复的静默坑）。
 fn resolve_script_credentials(
     app_type: &AppType,
     provider: &crate::provider::Provider,
@@ -105,11 +110,23 @@ fn resolve_script_credentials(
     base_url: Option<&str>,
 ) -> (String, String) {
     let (provider_base_url, provider_api_key) = provider.resolve_usage_credentials(app_type);
+    let provider_api_key = if app_type == &AppType::Omp {
+        crate::commands::resolve_secret_form(&provider_api_key)
+    } else {
+        provider_api_key
+    };
 
     let api_key = api_key
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+        .map(|value| {
+            // 脚本自带 apiKey 同样可能是 secret-bridge 形态
+            if app_type == &AppType::Omp {
+                crate::commands::resolve_secret_form(value)
+            } else {
+                value.to_owned()
+            }
+        })
         .unwrap_or(provider_api_key);
 
     let base_url = base_url

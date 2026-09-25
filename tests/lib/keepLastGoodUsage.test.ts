@@ -38,7 +38,21 @@ describe("isTransientUsageError", () => {
       isTransientUsageError(fail("Authentication failed (HTTP 401)")),
     ).toBe(false);
     expect(isTransientUsageError(fail("API key is empty"))).toBe(false);
-    expect(isTransientUsageError(fail("Unknown balance provider"))).toBe(false);
+    // 未知余额供应商：后端新文案带可行动指引（zh/en 两口径），仍必须判确定性失败
+    expect(
+      isTransientUsageError(
+        fail(
+          "Unknown balance provider: 自动余额查询目前仅支持 DeepSeek、StepFun、SiliconFlow、OpenRouter、NovitaAI。请将该供应商的用量模板改为「通用模板」并自定义查询脚本。",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isTransientUsageError(
+        fail(
+          "Unknown balance provider: automatic balance queries support DeepSeek, StepFun, SiliconFlow, OpenRouter and NovitaAI only. Switch this provider's usage template to the general template and customize the query script instead.",
+        ),
+      ),
+    ).toBe(false);
     expect(isTransientUsageError(fail("Unknown coding plan provider"))).toBe(
       false,
     );

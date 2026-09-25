@@ -27,29 +27,64 @@ const MAX_DEVICE_CODE_LIFETIME_SECS: u64 = 24 * 60 * 60;
 const MAX_POLL_INTERVAL_SECS: u64 = 60;
 const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, thiserror::Error)]
+/// 手写 Display 以按设置语言输出
+#[derive(Debug)]
 pub enum XaiOAuthError {
-    #[error("等待用户授权中")]
     AuthorizationPending,
-    #[error("用户拒绝授权")]
     AccessDenied,
-    #[error("Device Code 已过期")]
     ExpiredToken,
-    #[error("OAuth Token 获取失败: {0}")]
     TokenFetchFailed(String),
-    #[error("Refresh Token 失效或已过期，请重新登录 xAI")]
     RefreshTokenInvalid,
-    #[error("账号需要重新登录: {0}")]
     ReauthRequired(String),
-    #[error("网络错误: {0}")]
     NetworkError(String),
-    #[error("解析错误: {0}")]
     ParseError(String),
-    #[error("IO 错误: {0}")]
     IoError(String),
-    #[error("账号不存在: {0}")]
     AccountNotFound(String),
 }
+
+impl std::fmt::Display for XaiOAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            XaiOAuthError::AuthorizationPending => {
+                crate::error::pick("等待用户授权中", "Waiting for user authorization")
+            }
+            XaiOAuthError::AccessDenied => {
+                crate::error::pick("用户拒绝授权", "User denied authorization")
+            }
+            XaiOAuthError::ExpiredToken => {
+                crate::error::pick("Device Code 已过期", "Device code has expired")
+            }
+            XaiOAuthError::TokenFetchFailed(d) => crate::error::pick(
+                &format!("OAuth Token 获取失败: {d}"),
+                &format!("Failed to fetch OAuth token: {d}"),
+            ),
+            XaiOAuthError::RefreshTokenInvalid => crate::error::pick(
+                "Refresh Token 失效或已过期，请重新登录 xAI",
+                "Refresh token is invalid or expired; sign in to xAI again",
+            ),
+            XaiOAuthError::ReauthRequired(d) => crate::error::pick(
+                &format!("账号需要重新登录: {d}"),
+                &format!("Account needs to sign in again: {d}"),
+            ),
+            XaiOAuthError::NetworkError(d) => {
+                crate::error::pick(&format!("网络错误: {d}"), &format!("Network error: {d}"))
+            }
+            XaiOAuthError::ParseError(d) => {
+                crate::error::pick(&format!("解析错误: {d}"), &format!("Parse error: {d}"))
+            }
+            XaiOAuthError::IoError(d) => {
+                crate::error::pick(&format!("IO 错误: {d}"), &format!("IO error: {d}"))
+            }
+            XaiOAuthError::AccountNotFound(d) => crate::error::pick(
+                &format!("账号不存在: {d}"),
+                &format!("Account not found: {d}"),
+            ),
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl std::error::Error for XaiOAuthError {}
 
 impl From<reqwest::Error> for XaiOAuthError {
     fn from(err: reqwest::Error) -> Self {

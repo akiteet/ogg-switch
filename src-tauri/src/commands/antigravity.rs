@@ -405,8 +405,8 @@ pub(crate) async fn force_update_agy_binary_with(
         }
         // agy 的 manifest 给的是 sha512：边落盘边算，不整块进内存
         let mut hasher = sha2::Sha512::new();
-        let mut file = std::fs::File::create(&staging)
-            .map_err(|e| format!("创建临时文件失败: {e}"))?;
+        let mut file =
+            std::fs::File::create(&staging).map_err(|e| format!("创建临时文件失败: {e}"))?;
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| format!("下载中断: {e}"))?;
@@ -442,8 +442,7 @@ pub(crate) async fn force_update_agy_binary_with(
     // 原子替换：被占用（agy 正在运行）时 rename 报错，提示先关闭
     if let Err(e) = std::fs::rename(&staging, target) {
         let _ = std::fs::remove_file(&staging);
-        let busy = e.kind() == std::io::ErrorKind::PermissionDenied
-            || e.raw_os_error() == Some(5);
+        let busy = e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(5);
         return Err(if busy {
             format!("替换二进制失败：目标文件被占用（agy 可能正在运行），请关闭后重试: {e}")
         } else {
@@ -623,7 +622,7 @@ mod tests {
 
     // ── manifest 覆盖安装（下载 → sha512 → 原子替换） ──────────────────────
 
-    use crate::commands::misc::{AgyManifestEntry, agy_manifest_platform_keys};
+    use crate::commands::misc::{agy_manifest_platform_keys, AgyManifestEntry};
 
     /// 起一个只服务一次 GET 的本地 HTTP server（与 coding_plan 测试同款，零依赖）。
     /// 返回 base_url 与线程句柄（句柄 drop 即结束）。

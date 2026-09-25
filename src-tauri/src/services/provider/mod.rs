@@ -5312,6 +5312,14 @@ impl ProviderService {
                 || crate::proxy::providers::is_codex_official_provider(provider))
             && target_managed_codex_account_id.is_none()
         {
+            // 先恢复切走时备份的官方登录态（仅当本机 auth.json 缺失；用户重新登录过
+            // 就以本机那份为准），再做"清第三方残留"——顺序不能反：恢复出来的文件是
+            // 官方登录材料，`clear_stale_*` 只删第三方残留，因此不会被它误删。
+            crate::services::cli_auth_backup::restore_cli_auth_logging(
+                "codex",
+                &crate::codex_config::get_codex_auth_path(),
+            );
+
             let db_auth = provider.settings_config.get("auth");
             match crate::codex_config::clear_stale_codex_live_auth_after_official_switch(
                 db_auth.unwrap_or(&serde_json::Value::Null),

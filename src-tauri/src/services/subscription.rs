@@ -13,7 +13,7 @@ use crate::config;
 // ── 数据类型 ──────────────────────────────────────────────
 
 /// 凭据状态
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialStatus {
     Valid,
@@ -337,6 +337,19 @@ pub const TIER_CREDITS: &str = "credits";
 pub const TIER_GEMINI_PRO: &str = "gemini_pro";
 pub const TIER_GEMINI_FLASH: &str = "gemini_flash";
 pub const TIER_GEMINI_FLASH_LITE: &str = "gemini_flash_lite";
+
+/// Antigravity 专用：把配额聚合为两大模型族（对齐 Antigravity 官方 UI 的
+/// "Gemini Models" / "Claude and GPT models" 分组），而不是逐模型一行。
+/// 前端 `TIER_I18N_KEYS` 映射到 `subscription.geminiFamily` / `.claudeGptFamily`。
+pub const TIER_GEMINI_FAMILY: &str = "gemini_family";
+pub const TIER_CLAUDE_GPT_FAMILY: &str = "claude_gpt_family";
+
+/// 当前套餐 tier 的前缀（`current_plan:<套餐名>`）。
+///
+/// Antigravity 免费档没有 `retrieveUserQuota` 的许可（实测 403 SUBSCRIPTION_REQUIRED），
+/// 额度信息降级为 loadCodeAssist 的 `currentTier` —— 只有套餐名、没有百分比。前缀形式
+/// 让前端能认出这是"套餐名"而不是未知窗口，同时对具体套餐名保持开放（上游可改）。
+pub const TIER_CURRENT_PLAN_PREFIX: &str = "current_plan:";
 
 const KNOWN_TIERS: &[&str] = &[
     TIER_FIVE_HOUR,
@@ -1096,6 +1109,33 @@ struct GeminiQuotaResponse {
     buckets: Option<Vec<GeminiBucketInfo>>,
 }
 
+/// `v1internal:fetchAvailableModels` 响应：`models` 是 modelId → 信息表，
+/// 配额在 `quotaInfo` 里。作为 `retrieveUserQuota` 被许可墙挡住时的兜底数据源
+/// （2026-09-24 实测：quota 端点对免费档 403 SUBSCRIPTION_REQUIRED，UA 无关；
+/// fetchAvailableModels 带 Antigravity UA 可用，数据为真实周窗口）。
+#[derive(Deserialize)]
+struct CloudCodeQuotaInfo {
+    #[serde(rename = "remainingFraction")]
+    remaining_fraction: Option<f64>,
+    #[serde(rename = "resetTime")]
+    reset_time: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CloudCodeModelInfo {
+    /// 服务端内部模型（如 `chat_*`）也带 quotaInfo，但不属于用户可见配额，解析时跳过。
+    #[serde(rename = "isInternal")]
+    is_internal: Option<bool>,
+    #[serde(rename = "quotaInfo")]
+    quota_info: Option<CloudCodeQuotaInfo>,
+}
+
+#[derive(Deserialize)]
+struct CloudCodeAvailableModelsResponse {
+    #[serde(default)]
+    models: HashMap<String, CloudCodeModelInfo>,
+}
+
 /// 从 loadCodeAssist 响应中提取项目 ID
 fn extract_project_id(value: &serde_json::Value) -> Option<String> {
     match value {
@@ -1122,23 +1162,166 @@ fn classify_gemini_model(model_id: &str) -> &str {
     }
 }
 
+/// Cloud Code（`v1internal`）额度查询目标。
+///
+/// Gemini CLI 与 Antigravity 共用这套接口，差异只有这几处参数：
+/// - **base_url**：Gemini CLI 走 `https://cloudcode-pa.googleapis.com`；agy 自己的流量
+///   实测走 `https://daily-cloudcode-pa.googleapis.com`（见 `ANTIGRAVITY_CLOUDCODE_BASE`）。
+/// - **ide_type / plugin_type**：是 `ClientMetadata` 的 proto 枚举名。`ANTIGRAVITY` 与
+///   `GEMINI_CLI` 都是 `IdeType` 的成员（枚举表见 agy 二进制内嵌的 proto 描述符）。
+/// - **relogin_hint**：401/403 文案里让用户去重新登录的那个 CLI。
+/// - **fallback_plan_name**：`retrieveUserQuota` 403（无许可）时套餐兜底 tier 的显示名
+///   （如 "Antigravity"）；Gemini 不需要（它的 retrieveUserQuota 正常可用）。
+/// - **user_agent**：Cloud Code 上游按 UA 过滤客户端（实测 UA 无 Antigravity 标识时
+///   `fetchAvailableModels` 直接 403 PERMISSION_DENIED，见
+///   [`ANTIGRAVITY_CLOUDCODE_USER_AGENT`]）。Gemini CLI 的请求不带该头（多年实测无需）。
+/// - **family_tiers**：true（Antigravity）时配额聚合为 Gemini / Claude+GPT 两大模型族
+///   （对齐 Antigravity 官方 UI 分组）；false（Gemini CLI）维持 pro/flash/flash-lite
+///   逐类细分。
+///
+/// `base_url` 带 scheme 是为了单测能把它指向本地 mock server（冒烟测试无法打真接口）。
+struct CloudCodeTarget<'a> {
+    tool: &'a str,
+    base_url: &'a str,
+    ide_type: &'a str,
+    plugin_type: &'a str,
+    relogin_hint: &'a str,
+    fallback_plan_name: Option<&'a str>,
+    user_agent: Option<&'a str>,
+    family_tiers: bool,
+}
+
 /// 查询 Gemini 官方订阅额度
 ///
 /// 两步 API 调用：
 /// 1. loadCodeAssist → 获取 cloudaicompanionProject
 /// 2. retrieveUserQuota → 获取按模型分桶的配额数据
 async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
+    query_cloudcode_quota(
+        &CloudCodeTarget {
+            tool: "gemini",
+            base_url: "https://cloudcode-pa.googleapis.com",
+            ide_type: "GEMINI_CLI",
+            plugin_type: "GEMINI",
+            relogin_hint: "Gemini CLI",
+            fallback_plan_name: None,
+            user_agent: None,
+            family_tiers: false,
+        },
+        access_token,
+    )
+    .await
+}
+
+/// 查询 Antigravity（agy CLI）官方订阅额度。
+///
+/// 与 Gemini 同一条 Cloud Code 链路，只是主机是 agy 自己用的 `daily-` 前缀、
+/// `ideType` 是 `ANTIGRAVITY`；响应形态相同（`buckets[].modelId/remainingFraction/resetTime`），
+/// 所以复用同一份解析与分类。
+async fn query_antigravity_quota(access_token: &str) -> Result<SubscriptionQuota, String> {
+    query_cloudcode_quota(
+        &CloudCodeTarget {
+            tool: "antigravity",
+            base_url: ANTIGRAVITY_CLOUDCODE_BASE,
+            ide_type: "ANTIGRAVITY",
+            // Antigravity 是 Cloud Code 家族的编辑器插件；`PluginType` 枚举里没有
+            // ANTIGRAVITY 成员（PLUGIN_UNSPECIFIED / CLOUD_CODE / GEMINI / …），
+            // 取 `CLOUD_CODE`。该字段只影响服务端统计归类。
+            plugin_type: "CLOUD_CODE",
+            relogin_hint: "agy",
+            // 免费档无 retrieveUserQuota 许可（403 SUBSCRIPTION_REQUIRED）时的套餐名
+            fallback_plan_name: Some("Antigravity"),
+            user_agent: Some(ANTIGRAVITY_CLOUDCODE_USER_AGENT),
+            family_tiers: true,
+        },
+        access_token,
+    )
+    .await
+}
+
+/// 从 Google 风格的错误响应里提取人话原因（`error.message` + `ErrorInfo.reason`），
+/// 供非 2xx 分支透出——比塞整段 JSON 进错误详情可读得多。
+fn upstream_error_detail(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        // 非 JSON：截断原文
+        let preview: String = body.trim().chars().take(200).collect();
+        return if preview.is_empty() {
+            String::new()
+        } else {
+            format!(": {preview}")
+        };
+    };
+    let error = &value["error"];
+    let message = error["message"].as_str().unwrap_or_default().trim();
+    let reason = error["details"]
+        .as_array()
+        .and_then(|details| {
+            details.iter().find_map(|d| {
+                let reason = d["reason"].as_str()?;
+                (d["@type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .ends_with("ErrorInfo"))
+                .then(|| reason.to_string())
+            })
+        })
+        .unwrap_or_default();
+
+    match (reason.is_empty(), message.is_empty()) {
+        (false, false) => format!(": [{reason}] {message}"),
+        (false, true) => format!(": [{reason}]"),
+        (true, false) => format!(": {message}"),
+        (true, true) => String::new(),
+    }
+}
+
+/// 从 loadCodeAssist 的响应里取当前套餐，构成一个"套餐名"tier。
+///
+/// 实测响应（Antigravity 免费档）：
+/// `{"currentTier": {"id": "free-tier", "name": "Antigravity", "description": …}, …}`
+/// agy 终端横幅里的 `Antigravity Starter Quota` 就是这条信息。它没有百分比/窗口数据
+/// ——那类数据只有 `retrieveUserQuota` 有，而免费档没有该 API 的许可——所以 tier 名
+/// 用 `subscription` 前缀的专用键，前端 TIER_I18N_KEYS 给它一个"当前套餐"标签，
+/// utilization 固定 0（颜色恒绿，不参与已用/剩余标注）。
+fn cloudcode_tier_fallback(load_value: &serde_json::Value) -> Option<QuotaTier> {
+    let tier = &load_value["currentTier"];
+    // name 优先（如 "Antigravity"）；缺失时退到 id（如 "free-tier"）
+    let name = tier["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| tier["id"].as_str().map(str::trim).filter(|s| !s.is_empty()))
+        .map(String::from)?;
+    Some(QuotaTier {
+        name: format!("{TIER_CURRENT_PLAN_PREFIX}{name}"),
+        utilization: 0.0,
+        resets_at: None,
+        used_value_usd: None,
+        max_value_usd: None,
+    })
+}
+
+/// Cloud Code `v1internal` 额度查询（loadCodeAssist → retrieveUserQuota）。
+async fn query_cloudcode_quota(
+    target: &CloudCodeTarget<'_>,
+    access_token: &str,
+) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
+    let tool = target.tool;
 
     // ── Step 1: loadCodeAssist 获取项目 ID ──
-    let load_resp = client
-        .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
+    let mut load_req = client
+        .post(format!("{}/v1internal:loadCodeAssist", target.base_url))
         .header("Authorization", format!("Bearer {access_token}"))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if let Some(ua) = target.user_agent {
+        load_req = load_req.header("User-Agent", ua);
+    }
+    let load_resp = load_req
         .json(&serde_json::json!({
             "metadata": {
-                "ideType": "GEMINI_CLI",
-                "pluginType": "GEMINI"
+                "ideType": target.ide_type,
+                "pluginType": target.plugin_type
             }
         }))
         .timeout(std::time::Duration::from_secs(15))
@@ -1151,21 +1334,25 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
     };
 
     let load_status = load_resp.status();
-    if load_status == reqwest::StatusCode::UNAUTHORIZED
-        || load_status == reqwest::StatusCode::FORBIDDEN
-    {
+    if load_status == reqwest::StatusCode::UNAUTHORIZED {
         return Ok(SubscriptionQuota::error(
-            "gemini",
+            tool,
             CredentialStatus::Expired,
-            format!("Authentication failed (HTTP {load_status}). Please re-login with Gemini CLI."),
+            format!(
+                "Authentication failed (HTTP {load_status}). Please re-login with {}.",
+                target.relogin_hint
+            ),
         ));
     }
     if !load_status.is_success() {
+        // 403/其它：带上游原因（reason + message），不做"过期"推断——
+        // token 是否有效由 401 决定，403 多半是许可/套餐/权限，重新登录解决不了。
         let body = load_resp.text().await.unwrap_or_default();
+        let detail = upstream_error_detail(&body);
         return Ok(SubscriptionQuota::error(
-            "gemini",
+            tool,
             CredentialStatus::Valid,
-            format!("loadCodeAssist failed (HTTP {load_status}): {body}"),
+            format!("loadCodeAssist failed (HTTP {load_status}){detail}"),
         ));
     }
 
@@ -1173,14 +1360,26 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         Ok(b) => b,
         Err(e) => return Err(format!("Failed to read loadCodeAssist response: {e}")),
     };
-    let load_body: GeminiLoadCodeAssistResponse = match serde_json::from_slice(&load_raw) {
+    // 完整 body 先留一份：Antigravity 的套餐信息（currentTier）在这里，免费档
+    // `retrieveUserQuota` 会 403，届时用它兜底而不是报"会话过期"。
+    let load_value: serde_json::Value = match serde_json::from_slice(&load_raw) {
         Ok(v) => v,
         Err(e) => {
             return Ok(SubscriptionQuota::error(
-                "gemini",
+                tool,
                 CredentialStatus::Valid,
                 format!("Failed to parse loadCodeAssist response: {e}"),
-            ));
+            ))
+        }
+    };
+    let load_body: GeminiLoadCodeAssistResponse = match serde_json::from_value(load_value.clone()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(SubscriptionQuota::error(
+                tool,
+                CredentialStatus::Valid,
+                format!("Failed to parse loadCodeAssist response: {e}"),
+            ))
         }
     };
 
@@ -1195,10 +1394,14 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         quota_body["project"] = serde_json::Value::String(pid.clone());
     }
 
-    let quota_resp = client
-        .post("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota")
+    let mut quota_req = client
+        .post(format!("{}/v1internal:retrieveUserQuota", target.base_url))
         .header("Authorization", format!("Bearer {access_token}"))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if let Some(ua) = target.user_agent {
+        quota_req = quota_req.header("User-Agent", ua);
+    }
+    let quota_resp = quota_req
         .json(&quota_body)
         .timeout(std::time::Duration::from_secs(15))
         .send()
@@ -1210,21 +1413,109 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
     };
 
     let quota_status = quota_resp.status();
-    if quota_status == reqwest::StatusCode::UNAUTHORIZED
-        || quota_status == reqwest::StatusCode::FORBIDDEN
-    {
+    if quota_status == reqwest::StatusCode::UNAUTHORIZED {
+        // 只有 401 才是"登录态失效"：403 往往是许可/套餐问题（实测 Antigravity 免费档
+        // 会回 403 + SUBSCRIPTION_REQUIRED，账号明明是登录着的），映射成 Expired 会
+        // 误导用户去重新登录。403 落到下面"带响应体"的错误分支。
         return Ok(SubscriptionQuota::error(
-            "gemini",
+            tool,
             CredentialStatus::Expired,
-            format!("Authentication failed (HTTP {quota_status})."),
+            format!(
+                "Authentication failed (HTTP {quota_status}). Please re-login with {}.",
+                target.relogin_hint
+            ),
         ));
     }
     if !quota_status.is_success() {
+        // 实测（2026-09-24，Antigravity 免费档 / Antigravity Starter Quota）：
+        // 403 + SUBSCRIPTION_REQUIRED —— 账号登录正常（loadCodeAssist 200、
+        // currentTier=free-tier），但该账号没有 retrieveUserQuota 的许可。
+        // 先试 fetchAvailableModels 兜底（quota 端点被许可墙挡、UA 无关，见
+        // `try_query_available_models_quota` 的探针结论）；仍拿不到才降级。
         let body = quota_resp.text().await.unwrap_or_default();
+        let detail = upstream_error_detail(&body);
+
+        if target.user_agent.is_some() {
+            if let Some(tiers) =
+                try_query_available_models_quota(&client, target, access_token, &quota_body).await
+            {
+                log::info!(
+                    "retrieveUserQuota 失败（HTTP {quota_status}），fetchAvailableModels 兜底得到 {} 个模型分类",
+                    tiers.len()
+                );
+                return Ok(SubscriptionQuota {
+                    tool: tool.to_string(),
+                    credential_status: CredentialStatus::Valid,
+                    credential_message: None,
+                    success: true,
+                    tiers,
+                    extra_usage: None,
+                    error: None,
+                    queried_at: Some(now_millis()),
+                });
+            }
+        }
+
+        // agy 自己的「Antigravity Starter Quota」横幅取自 loadCodeAssist 的
+        // currentTier，这里降级用它兜底：显示当前套餐而不是报错/误报过期。
+        // 兜底 tier 名可由调用方传入（上游响应形态变化时不至于整条失败）。
+        if quota_status == reqwest::StatusCode::FORBIDDEN
+            && detail.contains("SUBSCRIPTION_REQUIRED")
+        {
+            if let Some(mut tier) = cloudcode_tier_fallback(&load_value) {
+                log::info!(
+                    "retrieveUserQuota 返回 403（无许可），用 loadCodeAssist 的 currentTier 兜底: {}",
+                    tier.name
+                );
+                if let Some(name) = target.fallback_plan_name {
+                    tier.name = format!("{TIER_CURRENT_PLAN_PREFIX}{name}");
+                }
+                return Ok(SubscriptionQuota {
+                    tool: tool.to_string(),
+                    credential_status: CredentialStatus::Valid,
+                    credential_message: None,
+                    success: true,
+                    tiers: vec![tier],
+                    extra_usage: None,
+                    error: None,
+                    queried_at: Some(now_millis()),
+                });
+            }
+            // loadCodeAssist 连 currentTier 都没给：用工具名兜底构造一个套餐 tier，
+            // 让用户至少看到「套餐 Antigravity」而不是一屏裸 403。
+            log::info!(
+                "retrieveUserQuota 403 且 loadCodeAssist 无 currentTier，用工具名兜底套餐 tier"
+            );
+            return Ok(SubscriptionQuota {
+                tool: tool.to_string(),
+                credential_status: CredentialStatus::Valid,
+                credential_message: None,
+                success: true,
+                tiers: vec![QuotaTier {
+                    name: format!(
+                        "{TIER_CURRENT_PLAN_PREFIX}{}",
+                        target.fallback_plan_name.unwrap_or_else(|| {
+                            if tool == "antigravity" {
+                                "Antigravity"
+                            } else {
+                                tool
+                            }
+                        })
+                    ),
+                    utilization: 0.0,
+                    resets_at: None,
+                    used_value_usd: None,
+                    max_value_usd: None,
+                }],
+                extra_usage: None,
+                error: None,
+                queried_at: Some(now_millis()),
+            });
+        }
         return Ok(SubscriptionQuota::error(
-            "gemini",
+            tool,
             CredentialStatus::Valid,
-            format!("retrieveUserQuota failed (HTTP {quota_status}): {body}"),
+            format!("retrieveUserQuota failed (HTTP {quota_status}){detail}"),
         ));
     }
 
@@ -1236,39 +1527,88 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         Ok(v) => v,
         Err(e) => {
             return Ok(SubscriptionQuota::error(
-                "gemini",
+                tool,
                 CredentialStatus::Valid,
                 format!("Failed to parse quota response: {e}"),
-            ));
+            ))
         }
     };
 
     // ── 按模型分类汇总，每类取最低 remainingFraction ──
+    // Antigravity 的 buckets 会混入 `chat_*` 等服务端内部模型，展示前按白名单滤掉
+    // （modelId 缺失的桶保留，维持 Gemini 路径的既有行为）。
+    let buckets = quota_data
+        .buckets
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|bucket| {
+            bucket
+                .model_id
+                .as_deref()
+                .is_none_or(is_user_facing_cloudcode_model)
+        })
+        .collect();
+    let tiers = build_cloudcode_model_tiers(buckets, target.family_tiers);
+
+    Ok(SubscriptionQuota {
+        tool: tool.to_string(),
+        credential_status: CredentialStatus::Valid,
+        credential_message: None,
+        success: true,
+        tiers,
+        extra_usage: None,
+        error: None,
+        queried_at: Some(now_millis()),
+    })
+}
+
+// ── Antigravity（agy）凭据与额度 ──────────────────────────
+
+/// Antigravity 两大模型族归类（对齐其官方 UI 的 "Gemini Models" /
+/// "Claude and GPT models" 分组）。调用前已经过
+/// `is_user_facing_cloudcode_model` 白名单过滤，只会有这几个前缀。
+fn cloudcode_model_family(model_id: &str) -> &'static str {
+    if model_id.starts_with("claude") || model_id.starts_with("gpt") {
+        TIER_CLAUDE_GPT_FAMILY
+    } else {
+        TIER_GEMINI_FAMILY
+    }
+}
+
+/// 把按模型分桶的配额聚合成展示 tiers。`family_tiers`（Antigravity）按两大模型族
+/// 聚合，否则（Gemini CLI）按 `classify_gemini_model` 细分 pro/flash/flash-lite；
+/// 每类取最低 remainingFraction（最受限的窗口），remainingFraction → utilization
+/// （已用百分比）。`retrieveUserQuota` 的 buckets 与 `fetchAvailableModels` 兜底
+/// 共用这一份聚合。
+fn build_cloudcode_model_tiers(
+    buckets: Vec<GeminiBucketInfo>,
+    family_tiers: bool,
+) -> Vec<QuotaTier> {
     let mut category_map: HashMap<String, (f64, Option<String>)> = HashMap::new();
+    for bucket in buckets {
+        let model_id = bucket.model_id.as_deref().unwrap_or("unknown");
+        let category = if family_tiers {
+            cloudcode_model_family(model_id).to_string()
+        } else {
+            classify_gemini_model(model_id).to_string()
+        };
+        let remaining = bucket.remaining_fraction.unwrap_or(1.0).clamp(0.0, 1.0);
 
-    if let Some(buckets) = quota_data.buckets {
-        for bucket in buckets {
-            let model_id = bucket.model_id.as_deref().unwrap_or("unknown");
-            let category = classify_gemini_model(model_id).to_string();
-            let remaining = bucket.remaining_fraction.unwrap_or(1.0).clamp(0.0, 1.0);
-
-            let entry = category_map
-                .entry(category)
-                .or_insert((remaining, bucket.reset_time.clone()));
-            if remaining < entry.0 {
-                entry.0 = remaining;
-                if bucket.reset_time.is_some() {
-                    entry.1.clone_from(&bucket.reset_time);
-                }
+        let entry = category_map
+            .entry(category)
+            .or_insert((remaining, bucket.reset_time.clone()));
+        if remaining < entry.0 {
+            entry.0 = remaining;
+            if bucket.reset_time.is_some() {
+                entry.1.clone_from(&bucket.reset_time);
             }
         }
     }
 
-    // 转换为 tiers（remainingFraction → utilization: 已用百分比）
     let sort_order = |name: &str| -> usize {
         match name {
-            TIER_GEMINI_PRO => 0,
-            TIER_GEMINI_FLASH => 1,
+            TIER_GEMINI_FAMILY | TIER_GEMINI_PRO => 0,
+            TIER_CLAUDE_GPT_FAMILY | TIER_GEMINI_FLASH => 1,
             TIER_GEMINI_FLASH_LITE => 2,
             _ => 3,
         }
@@ -1286,17 +1626,134 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         .collect();
 
     tiers.sort_by_key(|t| sort_order(&t.name));
+    tiers
+}
 
-    Ok(SubscriptionQuota {
-        tool: "gemini".to_string(),
-        credential_status: CredentialStatus::Valid,
-        credential_message: None,
-        success: true,
-        tiers,
-        extra_usage: None,
-        error: None,
-        queried_at: Some(now_millis()),
-    })
+/// 用户可见的 Cloud Code 模型 id 前缀白名单（Antigravity-Manager 同款口径）。
+/// 服务端还会下发 `chat_20706` 这类内部模型——它们未必带 `isInternal` 标记，
+/// 单靠该字段过滤不住，白名单一并兜住。
+fn is_user_facing_cloudcode_model(model_id: &str) -> bool {
+    const PREFIXES: [&str; 5] = ["gemini", "claude", "gpt", "image", "imagen"];
+    PREFIXES.iter().any(|p| model_id.starts_with(p))
+}
+
+/// `retrieveUserQuota` 失败时的兜底数据源：`v1internal:fetchAvailableModels`。
+///
+/// 2026-09-24 探针结论（真实 agy 凭据 × daily/prod/sandbox 三主机，探针已删）：
+/// 无 Antigravity UA 时 quota 双端点一律 403（「summary 绕过 403」的立项假设不成立），
+/// 带 [`ANTIGRAVITY_CLOUDCODE_USER_AGENT`] 后 `retrieveUserQuota` 主路径即恢复 200；
+/// 本兜底覆盖 quota 仍失败的情形（个别账号/套餐状态），`fetchAvailableModels`
+/// 返回 per-model `models.<id>.quotaInfo.{remainingFraction, resetTime}`。
+///
+/// 解析为与 buckets 同形的数据后复用 [`build_cloudcode_model_tiers`] 聚合；
+/// 任何一步拿不到数据都返回 `None`（调用方继续走原有 403 兜底/报错路径）。
+async fn try_query_available_models_quota(
+    client: &reqwest::Client,
+    target: &CloudCodeTarget<'_>,
+    access_token: &str,
+    quota_body: &serde_json::Value,
+) -> Option<Vec<QuotaTier>> {
+    let mut request = client
+        .post(format!(
+            "{}/v1internal:fetchAvailableModels",
+            target.base_url
+        ))
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Content-Type", "application/json");
+    if let Some(ua) = target.user_agent {
+        request = request.header("User-Agent", ua);
+    }
+    let resp = request
+        .json(quota_body)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        log::info!("fetchAvailableModels 兜底失败（HTTP {}）", resp.status());
+        return None;
+    }
+    let raw = resp.bytes().await.ok()?;
+    let data: CloudCodeAvailableModelsResponse = serde_json::from_slice(&raw).ok()?;
+    let buckets: Vec<GeminiBucketInfo> = data
+        .models
+        .into_iter()
+        .filter(|(model_id, info)| {
+            is_user_facing_cloudcode_model(model_id)
+                && !info.is_internal.unwrap_or(false)
+                && info.quota_info.is_some()
+        })
+        .map(|(model_id, info)| match info.quota_info {
+            Some(quota) => GeminiBucketInfo {
+                remaining_fraction: quota.remaining_fraction,
+                reset_time: quota.reset_time,
+                model_id: Some(model_id),
+            },
+            None => GeminiBucketInfo {
+                remaining_fraction: None,
+                reset_time: None,
+                model_id: Some(model_id),
+            },
+        })
+        .collect();
+    if buckets.is_empty() {
+        return None;
+    }
+    Some(build_cloudcode_model_tiers(buckets, target.family_tiers))
+}
+
+/// agy 自己流量走的 Cloud Code 主机（实测其 `cli.log`：`daily-cloudcode-pa.googleapis.com`）
+const ANTIGRAVITY_CLOUDCODE_BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
+
+/// Cloud Code 上游按 UA 过滤客户端。2026-09-24 实测（真实 agy 凭据 × daily/prod/sandbox）：
+/// reqwest 默认 UA 下 quota 请求 403（quota 端点报 SUBSCRIPTION_REQUIRED、
+/// fetchAvailableModels 报 PERMISSION_DENIED）；带含 "Antigravity" 的 UA 后整条链路解锁
+/// （loadCodeAssist 下发 project → retrieveUserQuota 200）。版本号取 Antigravity-Manager
+/// 钳制的已知稳定值（`KNOWN_STABLE_VERSION = "4.3.0"`），格式仿其
+/// `NATIVE_OAUTH_USER_AGENT`。
+const ANTIGRAVITY_CLOUDCODE_USER_AGENT: &str = "vscode/1.100.0 (Antigravity/4.3.0)";
+
+/// 读取 Antigravity 凭据（`(access_token, status, message)`，与其它 app 的读取器同形）。
+///
+/// 来源与优先级交给 `antigravity_config::agy_token_state`（**keyring 优先、token 文件兜底**，
+/// 与 agy 自己的组合存储一致）：`~/.gemini/antigravity-cli/antigravity-oauth-token`
+/// （`{access_token, token_type, refresh_token, expiry, email}`）与 Windows 凭据管理器
+/// `gemini:antigravity`（**`{"token": {access_token, …, expiry}}` —— token 是嵌套对象**）。
+///
+/// **刻意不刷新 token**：agy 的 OAuth client 不是公开凭据，不能像 Gemini CLI 那样内嵌
+/// （见 `GEMINI_OAUTH_CLIENT_ID` 的说明，以及仓库「不写入第三方 OAuth client 凭据」的约束）。
+/// access token 过期时交给前端提示用户跑一次 `agy` 重新登录。
+fn read_antigravity_credentials() -> (Option<String>, CredentialStatus, Option<String>) {
+    read_antigravity_credentials_with(crate::antigravity_config::credential_manager::find_matching)
+}
+
+/// `read_antigravity_credentials` 的可注入版本：keyring 读取由调用方提供，
+/// 单测因此不必触碰真实系统凭据条目（真实实现是 `credential_manager::find_matching`）。
+fn read_antigravity_credentials_with(
+    keyring: impl Fn() -> Result<
+        Vec<crate::antigravity_config::CredentialSnapshot>,
+        crate::error::AppError,
+    >,
+) -> (Option<String>, CredentialStatus, Option<String>) {
+    use crate::antigravity_config::AgyTokenState;
+
+    match crate::antigravity_config::agy_token_state(keyring) {
+        AgyTokenState::Usable(token) => (Some(token.token), CredentialStatus::Valid, None),
+        // 全都过期：把最晚的一枚交回去，调用方仍会试一次（CLI 可能刚在别处刷新过）。
+        // 读取过程中的问题（另一处凭据损坏等）附在提示里，别丢信息。
+        AgyTokenState::Expired { token, diagnostic } => {
+            let message = match diagnostic {
+                Some(detail) => format!("Antigravity access token has expired ({detail})"),
+                None => "Antigravity access token has expired".to_string(),
+            };
+            (Some(token.token), CredentialStatus::Expired, Some(message))
+        }
+        // 读到了但解析不出来 → 凭据损坏；一处都没有 → 没登录。
+        AgyTokenState::Missing { diagnostic } => match diagnostic {
+            Some(message) => (None, CredentialStatus::ParseError, Some(message)),
+            None => (None, CredentialStatus::NotFound, None),
+        },
+    }
 }
 
 // ── 入口函数 ──────────────────────────────────────────────
@@ -1417,6 +1874,39 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
             }
         }
         "grokbuild" => crate::services::subscription_grok::get_grok_subscription_quota().await,
+        // Antigravity：额度与 Gemini 同族（Cloud Code v1internal），凭据取 agy 自己的
+        // 登录态且**不刷新**（见 `read_antigravity_credentials`）。
+        "antigravity" => {
+            let (token, status, message) = read_antigravity_credentials();
+
+            match status {
+                CredentialStatus::NotFound => Ok(SubscriptionQuota::not_found("antigravity")),
+                CredentialStatus::ParseError => Ok(SubscriptionQuota::error(
+                    "antigravity",
+                    CredentialStatus::ParseError,
+                    message.unwrap_or_else(|| "Failed to parse credentials".to_string()),
+                )),
+                CredentialStatus::Expired => {
+                    // 本地快照说过期，仍试一把：另一种凭据来源可能是新的
+                    if let Some(token) = token {
+                        let result = query_antigravity_quota(&token).await?;
+                        if result.success {
+                            return Ok(result);
+                        }
+                    }
+                    Ok(SubscriptionQuota::error(
+                        "antigravity",
+                        CredentialStatus::Expired,
+                        message
+                            .unwrap_or_else(|| "Antigravity access token has expired".to_string()),
+                    ))
+                }
+                CredentialStatus::Valid => {
+                    let token = token.expect("token must be Some when status is Valid");
+                    query_antigravity_quota(&token).await
+                }
+            }
+        }
         _ => Ok(SubscriptionQuota::not_found(tool)),
     }
 }
@@ -1594,4 +2084,575 @@ mod tests {
         assert_eq!(window_seconds_to_tier_name(3600), "1_hour");
         assert_eq!(window_seconds_to_tier_name(86400), "1_day");
     }
+
+    // ── Antigravity 额度（v1.1.3 新接入）────────────────────
+
+    /// 零依赖 mock：按顺序应答 `count` 个请求（loadCodeAssist → retrieveUserQuota）。
+    /// 手法与 `services/coding_plan.rs` 的 `spawn_once_server` 一致。
+    fn spawn_cloudcode_server(responses: Vec<String>) -> (String, std::thread::JoinHandle<()>) {
+        let (base_url, handle, _) = spawn_cloudcode_server_capturing(responses);
+        (base_url, handle)
+    }
+
+    /// 同上，但额外记录收到的请求原文（断言 UA 等请求头用）。
+    fn spawn_cloudcode_server_capturing(
+        responses: Vec<String>,
+    ) -> (
+        String,
+        std::thread::JoinHandle<()>,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::{Arc, Mutex};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind local listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_in_thread = Arc::clone(&captured);
+        let handle = std::thread::spawn(move || {
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                captured_in_thread
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), handle, captured)
+    }
+
+    fn http_response(status_line: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// 用临时 mock 主机跑 antigravity 额度查询（`base_url` 可注入正是为此）。
+    async fn query_antigravity_against(
+        responses: Vec<String>,
+    ) -> Result<SubscriptionQuota, String> {
+        let (base_url, handle) = spawn_cloudcode_server(responses);
+        let result = query_cloudcode_quota(
+            &CloudCodeTarget {
+                tool: "antigravity",
+                base_url: &base_url,
+                ide_type: "ANTIGRAVITY",
+                plugin_type: "CLOUD_CODE",
+                relogin_hint: "agy",
+                fallback_plan_name: Some("Antigravity"),
+                user_agent: Some(ANTIGRAVITY_CLOUDCODE_USER_AGENT),
+                family_tiers: true,
+            },
+            "fake-access-token",
+        )
+        .await;
+        let _ = handle.join();
+        result
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_maps_cloudcode_buckets_to_model_tiers() {
+        // Antigravity 配额聚合为两大模型族（对齐其官方 UI 分组）：
+        // 同族取最低 remainingFraction（最受限窗口），族间 Gemini 在前。
+        let load = http_response(
+            "200 OK",
+            r#"{"cloudaicompanionProject":"projects/antigravity-demo"}"#,
+        );
+        let quota = http_response(
+            "200 OK",
+            r#"{"buckets":[
+                {"modelId":"gemini-3.8-flash","remainingFraction":0.25,"resetTime":"2026-09-25T00:00:00Z"},
+                {"modelId":"gemini-3.8-pro","remainingFraction":0.75,"resetTime":"2026-09-25T00:00:00Z"},
+                {"modelId":"claude-sonnet-4-6","remainingFraction":0.5,"resetTime":"2026-10-01T00:00:00Z"}
+            ]}"#,
+        );
+
+        let result = query_antigravity_against(vec![load, quota])
+            .await
+            .expect("mock server should answer");
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.tool, "antigravity");
+        assert_eq!(
+            result
+                .tiers
+                .iter()
+                .map(|t| (t.name.as_str(), t.utilization))
+                .collect::<Vec<_>>(),
+            // utilization = 已用百分比：gemini 族 min(0.25, 0.75) → 75%，
+            // claude/gpt 族 0.5 → 50%
+            vec![(TIER_GEMINI_FAMILY, 75.0), (TIER_CLAUDE_GPT_FAMILY, 50.0)]
+        );
+        assert_eq!(
+            result.tiers[0].resets_at.as_deref(),
+            Some("2026-09-25T00:00:00Z")
+        );
+        assert_eq!(
+            result.tiers[1].resets_at.as_deref(),
+            Some("2026-10-01T00:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_reports_expired_on_auth_failure() {
+        let result = query_antigravity_against(vec![http_response("401 Unauthorized", "{}")])
+            .await
+            .expect("auth failure is an Ok(quota) with status, not a transport error");
+
+        assert!(!result.success);
+        assert_eq!(result.credential_status, CredentialStatus::Expired);
+        let error = result.error.unwrap_or_default();
+        assert!(error.contains("401"), "{error}");
+        // 提示必须点名用户该去登录哪个 CLI
+        assert!(error.contains("agy"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_surfaces_transport_errors_as_err() {
+        // 端口上没有服务 → 连接失败：必须走 Err（前端 reject → retry + 保留上次成功值），
+        // 不能折叠成「凭据过期」这类确定性状态。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let err = query_cloudcode_quota(
+            &CloudCodeTarget {
+                tool: "antigravity",
+                base_url: &format!("http://127.0.0.1:{port}"),
+                ide_type: "ANTIGRAVITY",
+                plugin_type: "CLOUD_CODE",
+                relogin_hint: "agy",
+                fallback_plan_name: Some("Antigravity"),
+                user_agent: Some(ANTIGRAVITY_CLOUDCODE_USER_AGENT),
+                family_tiers: true,
+            },
+            "fake-access-token",
+        )
+        .await
+        .expect_err("connection refused must be Err");
+        assert!(err.contains("loadCodeAssist"), "{err}");
+    }
+
+    /// 隔离的临时 HOME（`antigravity_config` 的路径解析读 `CC_SWITCH_TEST_HOME`）
+    fn with_test_home<T>(test_fn: impl FnOnce(&std::path::Path) -> T) -> T {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", tmp.path());
+        let result = test_fn(tmp.path());
+        match old {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+        result
+    }
+
+    fn write_agy_token_file(home: &std::path::Path, expiry: &str) {
+        let dir = home.join(".gemini").join("antigravity-cli");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("antigravity-oauth-token"),
+            serde_json::json!({
+                "access_token": "agy-file-token",
+                "token_type": "Bearer",
+                "refresh_token": "agy-refresh",
+                "expiry": expiry,
+                "email": "user@example.com",
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// 造一枚与 agy 1.2.9 **实测形态**一致的 keyring 快照：
+    /// `{"token": {access_token, token_type, refresh_token, expiry}, "auth_method", "id_token"}`
+    /// —— `token` 是**嵌套对象**。曾经用 `"agy-live-token"` 这种字符串假数据做测试，
+    /// 正好掩盖了"把 token 当字符串解析"的真实 bug（v1.1.3）。
+    fn agy_keyring_snapshot(
+        access_token: &str,
+        expiry: &str,
+    ) -> crate::antigravity_config::CredentialSnapshot {
+        use base64::Engine as _;
+
+        let blob = serde_json::json!({
+            "token": {
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "refresh_token": "agy-refresh",
+                "expiry": expiry,
+            },
+            "auth_method": "consumer",
+            "id_token": "eyJhbGciOiJub25lIn0.fake.id-token",
+        });
+        crate::antigravity_config::CredentialSnapshot {
+            target_name: "gemini:antigravity".to_string(),
+            user_name: "antigravity".to_string(),
+            blob: base64::engine::general_purpose::STANDARD.encode(blob.to_string()),
+            persist: 2,
+            cred_type: 1,
+        }
+    }
+
+    fn keyring_with(
+        snapshots: Vec<crate::antigravity_config::CredentialSnapshot>,
+    ) -> impl Fn() -> Result<Vec<crate::antigravity_config::CredentialSnapshot>, crate::error::AppError>
+    {
+        move || Ok(snapshots.clone())
+    }
+
+    /// **回归主用例**：agy 把新 token 写在 keyring 里（嵌套对象形态），而 token 文件停在
+    /// 首次登录那天（已过期）。旧实现按字符串读 `token` → 解析失败 → 回落到过期文件 →
+    /// 误报「会话过期」。
+    #[test]
+    #[serial_test::serial]
+    fn antigravity_credentials_read_nested_keyring_token_over_stale_file() {
+        with_test_home(|home| {
+            write_agy_token_file(home, "2020-01-01T00:00:00+00:00");
+
+            let (token, status, message) =
+                read_antigravity_credentials_with(keyring_with(vec![agy_keyring_snapshot(
+                    "agy-keyring-token",
+                    "2999-01-01T00:00:00+00:00",
+                )]));
+
+            assert_eq!(token.as_deref(), Some("agy-keyring-token"));
+            assert_eq!(status, CredentialStatus::Valid);
+            assert!(message.is_none());
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn antigravity_credentials_accept_legacy_string_shaped_keyring_blob() {
+        with_test_home(|_home| {
+            use base64::Engine as _;
+
+            let blob = base64::engine::general_purpose::STANDARD
+                .encode(serde_json::json!({ "token": "agy-legacy-token" }).to_string());
+            let snapshot = crate::antigravity_config::CredentialSnapshot {
+                target_name: "gemini:antigravity".to_string(),
+                user_name: "antigravity".to_string(),
+                blob,
+                persist: 2,
+                cred_type: 1,
+            };
+
+            let (token, status, _) =
+                read_antigravity_credentials_with(keyring_with(vec![snapshot]));
+
+            assert_eq!(token.as_deref(), Some("agy-legacy-token"));
+            assert_eq!(status, CredentialStatus::Valid);
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn antigravity_credentials_read_fresh_token_file() {
+        with_test_home(|home| {
+            write_agy_token_file(home, "2999-01-01T00:00:00+00:00");
+
+            let (token, status, message) = read_antigravity_credentials_with(keyring_with(vec![]));
+
+            assert_eq!(token.as_deref(), Some("agy-file-token"));
+            assert_eq!(status, CredentialStatus::Valid);
+            assert!(message.is_none());
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn antigravity_credentials_pick_the_freshest_of_the_two_sources() {
+        with_test_home(|home| {
+            // 反向：keyring 里是旧 token，文件反而是新的 → 用文件的
+            write_agy_token_file(home, "2999-01-01T00:00:00+00:00");
+
+            let (token, status, _) =
+                read_antigravity_credentials_with(keyring_with(vec![agy_keyring_snapshot(
+                    "agy-keyring-stale",
+                    "2020-01-01T00:00:00+00:00",
+                )]));
+
+            assert_eq!(token.as_deref(), Some("agy-file-token"));
+            assert_eq!(status, CredentialStatus::Valid);
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn antigravity_credentials_report_expired_when_everything_is_stale() {
+        with_test_home(|home| {
+            write_agy_token_file(home, "2020-01-01T00:00:00+00:00");
+
+            let (token, status, message) =
+                read_antigravity_credentials_with(keyring_with(vec![agy_keyring_snapshot(
+                    "agy-keyring-stale",
+                    "2020-06-01T00:00:00+00:00",
+                )]));
+
+            // 仍把最近的一枚交回去（调用方会试一把），但状态是"已过期"
+            assert_eq!(token.as_deref(), Some("agy-keyring-stale"));
+            assert_eq!(status, CredentialStatus::Expired);
+            assert!(message.unwrap_or_default().contains("expired"));
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn antigravity_credentials_report_not_found_and_parse_error() {
+        with_test_home(|home| {
+            // 既无 keyring 条目也无 token 文件 → not_found（前端显示「请先运行 agy 登录」）
+            let (token, status, _) = read_antigravity_credentials_with(keyring_with(vec![]));
+            assert!(token.is_none());
+            assert_eq!(status, CredentialStatus::NotFound);
+
+            // 有文件但内容损坏 → parse_error（而不是静默消失）
+            let dir = home.join(".gemini").join("antigravity-cli");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("antigravity-oauth-token"), "{not json").unwrap();
+            let (_, status, message) = read_antigravity_credentials_with(keyring_with(vec![]));
+            assert_eq!(status, CredentialStatus::ParseError);
+            assert!(message.is_some());
+
+            // keyring 条目存在但里面没有 access_token → 也算 parse_error，而不是假装没登录
+            use base64::Engine as _;
+            let empty_blob = base64::engine::general_purpose::STANDARD
+                .encode(serde_json::json!({ "token": { "token_type": "Bearer" } }).to_string());
+            let broken = crate::antigravity_config::CredentialSnapshot {
+                target_name: "gemini:antigravity".to_string(),
+                user_name: "antigravity".to_string(),
+                blob: empty_blob,
+                persist: 2,
+                cred_type: 1,
+            };
+            std::fs::remove_file(dir.join("antigravity-oauth-token")).unwrap();
+            let (_, status, message) =
+                read_antigravity_credentials_with(keyring_with(vec![broken]));
+            assert_eq!(status, CredentialStatus::ParseError);
+            assert!(message.is_some());
+        });
+    }
+
+    #[test]
+    fn cloudcode_tier_fallback_prefers_name_then_falls_back_to_id() {
+        // 实测形态：name 存在（Antigravity 免费档）
+        let load = serde_json::json!({
+            "currentTier": { "id": "free-tier", "name": "Antigravity", "description": "…" }
+        });
+        let tier = cloudcode_tier_fallback(&load).expect("tier");
+        assert_eq!(tier.name, format!("{TIER_CURRENT_PLAN_PREFIX}Antigravity"));
+        assert_eq!(tier.utilization, 0.0);
+        assert!(tier.resets_at.is_none());
+
+        // 上游形态变化：只有 id 没有 name（如 {"id":"free-tier"}）→ 用 id 兜底
+        let load = serde_json::json!({ "currentTier": { "id": "free-tier" } });
+        let tier = cloudcode_tier_fallback(&load).expect("tier from id");
+        assert_eq!(tier.name, format!("{TIER_CURRENT_PLAN_PREFIX}free-tier"));
+
+        // 两者都无 → None（交给 403 分支的工具名兜底）
+        assert!(cloudcode_tier_fallback(&serde_json::json!({
+            "currentTier": {}
+        }))
+        .is_none());
+        assert!(cloudcode_tier_fallback(&serde_json::json!({})).is_none());
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_403_subscription_required_falls_back_to_plan_tier() {
+        // v1.1.3 实测：免费档 retrieveUserQuota 403 + SUBSCRIPTION_REQUIRED，
+        // 账号登录正常（loadCodeAssist 200）。必须显示套餐 tier，
+        // 而不是把裸 403 塞给用户（2026-09-24 用户截图）。
+        let load = http_response(
+            "200 OK",
+            r#"{"currentTier":{"id":"free-tier","name":"Antigravity"}}"#,
+        );
+        let quota_403 = http_response(
+            "403 Forbidden",
+            r#"{"error":{"code":403,"message":"You do not have a valid license of this product.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SUBSCRIPTION_REQUIRED"}]}}"#,
+        );
+
+        let result = query_antigravity_against(vec![load, quota_403])
+            .await
+            .expect("403 is an Ok(quota) with fallback, not a transport error");
+
+        assert!(
+            result.success,
+            "fallback must be success: {:?}",
+            result.error
+        );
+        assert_eq!(
+            result.tiers[0].name,
+            format!("{TIER_CURRENT_PLAN_PREFIX}Antigravity")
+        );
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_403_without_current_tier_still_falls_back() {
+        // 兜底条件太窄曾让用户看到一屏裸 403：即使 loadCodeAssist 没有
+        // currentTier，SUBSCRIPTION_REQUIRED 也要给出「套餐 <工具名>」。
+        let load = http_response("200 OK", r#"{}"#);
+        let quota_403 = http_response(
+            "403 Forbidden",
+            r#"{"error":{"code":403,"message":"no license","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SUBSCRIPTION_REQUIRED"}]}}"#,
+        );
+
+        let result = query_antigravity_against(vec![load, quota_403])
+            .await
+            .expect("403 fallback is Ok");
+
+        assert!(result.success);
+        assert_eq!(
+            result.tiers[0].name,
+            format!("{TIER_CURRENT_PLAN_PREFIX}Antigravity")
+        );
+    }
+
+    #[test]
+    fn antigravity_client_metadata_matches_proto_enum_members() {
+        // ideType/pluginType 必须是 Cloud Code ClientMetadata 的枚举成员名
+        // （枚举表取自 agy 内嵌的 proto 描述符）；写错了服务端会拒绝整条请求。
+        let target = CloudCodeTarget {
+            tool: "antigravity",
+            base_url: ANTIGRAVITY_CLOUDCODE_BASE,
+            ide_type: "ANTIGRAVITY",
+            plugin_type: "CLOUD_CODE",
+            relogin_hint: "agy",
+            fallback_plan_name: Some("Antigravity"),
+            user_agent: Some(ANTIGRAVITY_CLOUDCODE_USER_AGENT),
+            family_tiers: true,
+        };
+        assert!(ANTIGRAVITY_CLOUDCODE_BASE.starts_with("https://"));
+        assert_eq!(target.ide_type, "ANTIGRAVITY");
+        // 前端提示里的 CLI 名（SharedCLIName）不该写成 appId
+        assert_eq!(target.relogin_hint, "agy");
+        // Cloud Code 上游按 UA 过滤客户端（实测无 Antigravity UA 时
+        // fetchAvailableModels 403），antigravity 目标必须带 UA。
+        assert_eq!(
+            target.user_agent,
+            Some("vscode/1.100.0 (Antigravity/4.3.0)")
+        );
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_403_falls_back_to_fetch_available_models() {
+        // retrieveUserQuota 被许可墙挡住（403 SUBSCRIPTION_REQUIRED，UA 无关）时，
+        // fetchAvailableModels（带 Antigravity UA 可用）承担真实配额数据源：
+        // 聚合规则与 buckets 路径一致（两族归类、每族取最低 remaining）。
+        let load = http_response(
+            "200 OK",
+            r#"{"cloudaicompanionProject":"projects/antigravity-demo"}"#,
+        );
+        let quota_403 = http_response(
+            "403 Forbidden",
+            r#"{"error":{"code":403,"message":"no license","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SUBSCRIPTION_REQUIRED"}]}}"#,
+        );
+        let models = http_response(
+            "200 OK",
+            r#"{"models":{
+                "chat_20706":{"isInternal":true,"quotaInfo":{"remainingFraction":0.1}},
+                "chat_23310":{"quotaInfo":{"remainingFraction":0.2}},
+                "gemini-3.5-flash-high":{"displayName":"Gemini 3.5 Flash (High)","quotaInfo":{"remainingFraction":0.75,"resetTime":"2026-10-01T17:13:59Z"}},
+                "gemini-3.5-flash-low":{"quotaInfo":{"remainingFraction":0.9}},
+                "gemini-3-pro":{"quotaInfo":{"remainingFraction":0.5,"resetTime":"2026-10-01T00:00:00Z"}},
+                "claude-sonnet-4-6":{"quotaInfo":{"remainingFraction":0.2,"resetTime":"2026-10-01T18:00:00Z"}},
+                "claude-opus-4-6-thinking":{"quotaInfo":{"remainingFraction":0.4}},
+                "gpt-oss-120b-medium":{"quotaInfo":{"remainingFraction":0.6}},
+                "no-quota-model":{"displayName":"NoQuota"}
+            }}"#,
+        );
+
+        let result = query_antigravity_against(vec![load, quota_403, models])
+            .await
+            .expect("fetchAvailableModels fallback is Ok");
+
+        assert!(result.success);
+        let names: Vec<&str> = result.tiers.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec![TIER_GEMINI_FAMILY, TIER_CLAUDE_GPT_FAMILY]);
+        // 每族取最低 remaining：gemini 族 min(0.75, 0.9, 0.5) = 0.5 → 已用 50%；
+        // claude/gpt 族 min(0.2, 0.4, 0.6) = 0.2 → 已用 80%
+        assert_eq!(result.tiers[0].utilization, 50.0);
+        assert_eq!(result.tiers[1].utilization, 80.0);
+        assert_eq!(
+            result.tiers[0].resets_at.as_deref(),
+            Some("2026-10-01T00:00:00Z")
+        );
+        assert_eq!(
+            result.tiers[1].resets_at.as_deref(),
+            Some("2026-10-01T18:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_sends_antigravity_user_agent() {
+        // Cloud Code 上游按 UA 过滤客户端：无 Antigravity UA 时 fetchAvailableModels
+        // 403（2026-09-24 实测）。UA 一旦丢失，配额会静默退回套餐兜底——这里锁死。
+        let load = http_response("200 OK", r#"{}"#);
+        let quota_403 = http_response("403 Forbidden", r#"{"error":{"message":"no license"}}"#);
+        let models = http_response(
+            "200 OK",
+            r#"{"models":{"gemini-3.5-flash":{"quotaInfo":{"remainingFraction":0.9}}}}"#,
+        );
+
+        let (base_url, handle, captured) =
+            spawn_cloudcode_server_capturing(vec![load, quota_403, models]);
+        let result = query_cloudcode_quota(
+            &CloudCodeTarget {
+                tool: "antigravity",
+                base_url: &base_url,
+                ide_type: "ANTIGRAVITY",
+                plugin_type: "CLOUD_CODE",
+                relogin_hint: "agy",
+                fallback_plan_name: Some("Antigravity"),
+                user_agent: Some(ANTIGRAVITY_CLOUDCODE_USER_AGENT),
+                family_tiers: true,
+            },
+            "fake-access-token",
+        )
+        .await;
+        let _ = handle.join();
+
+        let requests = captured.lock().unwrap();
+        let models_request = requests
+            .iter()
+            .find(|r| r.contains("v1internal:fetchAvailableModels"))
+            .expect("fetchAvailableModels request must be captured");
+        assert!(
+            models_request
+                .to_lowercase()
+                .contains("user-agent: vscode/1.100.0 (antigravity/4.3.0)"),
+            "UA header missing on fetchAvailableModels request: {models_request}"
+        );
+        assert!(result.expect("models fallback is Ok").success);
+    }
+
+    #[tokio::test]
+    async fn antigravity_quota_403_with_models_unavailable_still_falls_back_to_plan_tier() {
+        // fetchAvailableModels 也失败（HTTP 500）→ 落回 loadCodeAssist currentTier 套餐兜底。
+        let load = http_response("200 OK", r#"{}"#);
+        let quota_403 = http_response(
+            "403 Forbidden",
+            r#"{"error":{"code":403,"message":"no license","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SUBSCRIPTION_REQUIRED"}]}}"#,
+        );
+        let models_500 = http_response(
+            "500 Internal Server Error",
+            r#"{"error":{"message":"boom"}}"#,
+        );
+
+        let result = query_antigravity_against(vec![load, quota_403, models_500])
+            .await
+            .expect("plan-tier fallback is Ok");
+        assert!(result.success);
+        assert_eq!(
+            result.tiers[0].name,
+            format!("{TIER_CURRENT_PLAN_PREFIX}Antigravity")
+        );
+    }
+
+    // 探针结论详见 `try_query_available_models_quota` 与
+    // `ANTIGRAVITY_CLOUDCODE_USER_AGENT` 的文档注释（探针/live-check 测试已删除）。
 }

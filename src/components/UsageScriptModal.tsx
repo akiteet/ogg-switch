@@ -8,7 +8,10 @@ import { usageApi, settingsApi, type AppId } from "@/lib/api";
 import { copilotGetUsage, copilotGetUsageForAccount } from "@/lib/api/copilot";
 import { useSettingsQuery } from "@/lib/query";
 import { resolveManagedAccountId } from "@/lib/authBinding";
-import { resolveCodexOfficialIdentity } from "@/utils/providerCapabilities";
+import {
+  resolveCodexOfficialIdentity,
+  supportsOfficialSubscriptionQuota,
+} from "@/utils/providerCapabilities";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import {
@@ -161,7 +164,7 @@ function detectBalanceProvider(baseUrl: string | undefined): boolean {
 }
 
 function isOfficialSubscriptionProvider(provider: Provider, appId: AppId) {
-  if (!["claude", "codex", "gemini", "grokbuild"].includes(appId)) return false;
+  if (!supportsOfficialSubscriptionQuota(appId)) return false;
   if (provider.category === "official") return true;
 
   const config = provider.settingsConfig as Record<string, any>;
@@ -403,12 +406,12 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
     }
     if (!Number.isInteger(num)) {
       toast.warning(
-        t("usageScript.timeoutMustBeInteger") || "超时时间必须为整数",
+        t("usageScript.timeoutMustBeInteger", { defaultValue: "超时时间必须为整数" }),
       );
     }
     if (num < 0) {
       toast.error(
-        t("usageScript.timeoutCannotBeNegative") || "超时时间不能为负数",
+        t("usageScript.timeoutCannotBeNegative", { defaultValue: "超时时间不能为负数" }),
       );
       return 10;
     }
@@ -423,20 +426,22 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
     }
     if (!Number.isInteger(num)) {
       toast.warning(
-        t("usageScript.intervalMustBeInteger") || "自动查询间隔必须为整数",
+        t("usageScript.intervalMustBeInteger", { defaultValue: "自动查询间隔必须为整数" }),
       );
     }
     if (num < 0) {
       toast.error(
-        t("usageScript.intervalCannotBeNegative") || "自动查询间隔不能为负数",
+        t("usageScript.intervalCannotBeNegative", { defaultValue: "自动查询间隔不能为负数" }),
       );
       return 0;
     }
     const clamped = Math.max(0, Math.min(1440, Math.floor(num)));
     if (clamped !== num && num > 0) {
       toast.info(
-        t("usageScript.intervalAdjusted", { value: clamped }) ||
-          `自动查询间隔已调整为 ${clamped} 分钟`,
+        t("usageScript.intervalAdjusted", {
+          value: clamped,
+          defaultValue: `自动查询间隔已调整为 ${clamped} 分钟`,
+        }),
       );
     }
     return clamped;
@@ -989,7 +994,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                       </code>
                     ) : (
                       <span className="text-muted-foreground/50 italic">
-                        {t("common.notSet") || "未设置"}
+                        {t("common.notSet", { defaultValue: "未设置" })}
                       </span>
                     )}
                   </div>
@@ -1030,7 +1035,7 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                       </>
                     ) : (
                       <span className="text-muted-foreground/50 italic">
-                        {t("common.notSet") || "未设置"}
+                        {t("common.notSet", { defaultValue: "未设置" })}
                       </span>
                     )}
                   </div>
@@ -1065,6 +1070,14 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                     </span>
                   ))}
                 </div>
+                {/* 域名不在内置余额供应商列表：提前告知查询必然失败并给出口，
+                    别等保存后每次查询都吃一句 Unknown balance provider */}
+                {providerCredentials.baseUrl &&
+                  !detectBalanceProvider(providerCredentials.baseUrl) && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      {t("usageScript.balanceUnknownHint")}
+                    </p>
+                  )}
               </div>
             )}
 

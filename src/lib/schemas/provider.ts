@@ -1,11 +1,13 @@
 import { z } from "zod";
+import i18n from "@/i18n";
 
 /**
- * 解析 JSON 语法错误，提取位置信息
+ * 解析 JSON 语法错误，提取位置信息。消息在校验期经 i18n 动态取词
+ * （zod 的静态 message 会在模块加载时固化语言，因此全部走 superRefine）。
  */
 function parseJsonError(error: unknown): string {
   if (!(error instanceof SyntaxError)) {
-    return "配置 JSON 格式错误";
+    return i18n.t("providerForm.jsonError.invalid");
   }
 
   const message = error.message;
@@ -14,7 +16,10 @@ function parseJsonError(error: unknown): string {
   const positionMatch = message.match(/at position (\d+)/i);
   if (positionMatch) {
     const position = parseInt(positionMatch[1], 10);
-    return `JSON 格式错误：${message.split(" in JSON")[0]}（位置：${position}）`;
+    return i18n.t("providerForm.jsonError.atPosition", {
+      message: message.split(" in JSON")[0],
+      position,
+    });
   }
 
   // Firefox: "JSON.parse: unexpected character at line 1 column 23"
@@ -22,27 +27,38 @@ function parseJsonError(error: unknown): string {
   if (lineColumnMatch) {
     const line = lineColumnMatch[1];
     const column = lineColumnMatch[2];
-    return `JSON 格式错误：第 ${line} 行，第 ${column} 列`;
+    return i18n.t("providerForm.jsonError.atLineColumn", { line, column });
   }
 
-  // 通用情况：提取关键错误信息
-  const cleanMessage = message
-    .replace(/^JSON\.parse:\s*/i, "")
-    .replace(/^Unexpected\s+/i, "意外的 ")
-    .replace(/token/gi, "符号")
-    .replace(/Expected/gi, "预期");
-
-  return `JSON 格式错误：${cleanMessage}`;
+  // 通用情况：原样透出引擎消息（英文），前缀本地化——引擎文本不适合机器翻译拼装
+  return i18n.t("providerForm.jsonError.generic", { message });
 }
 
 export const providerSchema = z.object({
   name: z.string(), // 必填校验移至 handleSubmit 中用 toast 提示
-  websiteUrl: z.string().url("请输入有效的网址").optional().or(z.literal("")),
+  websiteUrl: z
+    .string()
+    .optional()
+    .or(z.literal(""))
+    .superRefine((value, ctx) => {
+      if (value && !/^https?:\/\/.+/.test(value.trim())) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: i18n.t("providerForm.urlInvalid"),
+        });
+      }
+    }),
   notes: z.string().optional(),
   settingsConfig: z
     .string()
-    .min(1, "请填写配置内容")
     .superRefine((value, ctx) => {
+      if (!value.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: i18n.t("providerForm.configRequired"),
+        });
+        return;
+      }
       try {
         JSON.parse(value);
       } catch (error) {

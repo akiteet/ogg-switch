@@ -1,10 +1,8 @@
 import { cloneElement, isValidElement } from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
-import { useUsageSummaryByApp } from "@/lib/query/usage";
-import { usageApi } from "@/lib/api/usage";
+import { useUsageSummaryByApp, useOmpQuotaWindows } from "@/lib/query/usage";
 import { cn } from "@/lib/utils";
 import { APP_ICON_MAP } from "@/config/appConfig";
 import type { AppId } from "@/lib/api/types";
@@ -220,11 +218,8 @@ export function UsageHero({
           : undefined,
   };
 
-  const { data: ompQuota = [] } = useQuery({
-    queryKey: ["ompQuotaWindows"],
-    queryFn: () => usageApi.getOmpQuotaWindows(),
+  const { data: ompQuota = [] } = useOmpQuotaWindows({
     enabled: appType === "omp" && requests === 0,
-    staleTime: 30_000,
   });
 
   if (isLoading) {

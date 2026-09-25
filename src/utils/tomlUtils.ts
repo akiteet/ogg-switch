@@ -1,5 +1,6 @@
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { normalizeTomlText } from "@/utils/textNormalization";
+import i18n from "@/i18n";
 import { McpServerSpec } from "../types";
 
 /**
@@ -52,7 +53,7 @@ export const mcpServerToToml = (server: McpServerSpec): string => {
  */
 export const tomlToMcpServer = (tomlText: string): McpServerSpec => {
   if (!tomlText.trim()) {
-    throw new Error("TOML 内容不能为空");
+    throw new Error(i18n.t("mcp.tomlError.empty"));
   }
 
   const parsed = parseToml(normalizeTomlText(tomlText));
@@ -89,9 +90,7 @@ export const tomlToMcpServer = (tomlText: string): McpServerSpec => {
     }
   }
 
-  throw new Error(
-    "无法识别的 TOML 格式。请提供单个 MCP 服务器配置，或使用 [mcp_servers.<id>] 格式",
-  );
+  throw new Error(i18n.t("mcp.tomlError.unrecognized"));
 };
 
 /**
@@ -100,7 +99,7 @@ export const tomlToMcpServer = (tomlText: string): McpServerSpec => {
  */
 function normalizeServerConfig(config: any): McpServerSpec {
   if (!config || typeof config !== "object") {
-    throw new Error("服务器配置必须是对象");
+    throw new Error(i18n.t("mcp.tomlError.configNotObject"));
   }
 
   const type = (config.type as string) || "stdio";
@@ -110,7 +109,7 @@ function normalizeServerConfig(config: any): McpServerSpec {
 
   if (type === "stdio") {
     if (!config.command || typeof config.command !== "string") {
-      throw new Error("stdio 类型的 MCP 服务器必须包含 command 字段");
+      throw new Error(i18n.t("mcp.tomlError.stdioRequiresCommand"));
     }
 
     const server: McpServerSpec = {
@@ -148,7 +147,7 @@ function normalizeServerConfig(config: any): McpServerSpec {
     return server;
   } else if (type === "http" || type === "sse") {
     if (!config.url || typeof config.url !== "string") {
-      throw new Error(`${type} 类型的 MCP 服务器必须包含 url 字段`);
+      throw new Error(i18n.t("mcp.tomlError.httpRequiresUrl", { type }));
     }
 
     const server: McpServerSpec = {
@@ -177,7 +176,7 @@ function normalizeServerConfig(config: any): McpServerSpec {
 
     return server;
   } else {
-    throw new Error(`不支持的 MCP 服务器类型: ${type}`);
+    throw new Error(i18n.t("mcp.tomlError.unsupportedType", { type }));
   }
 }
 

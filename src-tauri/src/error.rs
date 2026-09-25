@@ -1,67 +1,63 @@
 use std::path::Path;
 use std::sync::PoisonError;
 
-use thiserror::Error;
+/// 后端用户可见文案的语言选择：设置语言为 en 时走英文，其余（zh / zh-TW / ja）
+/// 一律走中文——与 `services/provider/usage.rs` 的折叠口径一致（ja/zh-TW 回落 zh）。
+/// 错误枚举（AppError / proxy::error 等）的 Display 都经由这里输出，测试环境
+/// settings 未初始化时 language 为 None → 中文，既有断言不受影响。
+pub fn prefer_en() -> bool {
+    crate::settings::get_settings().language.as_deref() == Some("en")
+}
 
-#[derive(Debug, Error)]
+/// 按当前 UI 语言在 zh / en 文案之间取一。
+pub fn pick(zh: &str, en: &str) -> String {
+    if prefer_en() {
+        en.to_string()
+    } else {
+        zh.to_string()
+    }
+}
+
+#[derive(Debug)]
 pub enum AppError {
-    #[error("配置错误: {0}")]
     Config(String),
-    #[error("无效输入: {0}")]
     InvalidInput(String),
     /// Native files changed after OGG Switch last read them.
-    #[error("并发冲突: {0}")]
     Conflict(String),
-    #[error("IO 错误: {path}: {source}")]
     Io {
         path: String,
-        #[source]
         source: std::io::Error,
     },
-    #[error("{context}: {source}")]
     IoContext {
         context: String,
-        #[source]
         source: std::io::Error,
     },
-    #[error("JSON 解析错误: {path}: {source}")]
     Json {
         path: String,
-        #[source]
         source: serde_json::Error,
     },
-    #[error("JSON 序列化失败: {source}")]
     JsonSerialize {
-        #[source]
         source: serde_json::Error,
     },
-    #[error("TOML 解析错误: {path}: {source}")]
     Toml {
         path: String,
-        #[source]
         source: toml::de::Error,
     },
-    #[error("锁获取失败: {0}")]
     Lock(String),
-    #[error("MCP 校验失败: {0}")]
     McpValidation(String),
-    #[error("{0}")]
     Message(String),
-    #[error("HTTP {status}: {body}")]
-    HttpStatus { status: u16, body: String },
-    #[error("{zh} ({en})")]
+    HttpStatus {
+        status: u16,
+        body: String,
+    },
     Localized {
         key: &'static str,
         zh: String,
         en: String,
     },
-    #[error("数据库错误: {0}")]
     Database(String),
-    #[error("OMO 配置文件不存在")]
     OmoConfigNotFound,
-    #[error("所有供应商已熔断，无可用渠道")]
     AllProvidersCircuitOpen,
-    #[error("未配置供应商")]
     NoProvidersConfigured,
 }
 
@@ -92,6 +88,85 @@ impl AppError {
             key,
             zh: zh.into(),
             en: en.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 手写 Display 以按设置语言输出（原先 thiserror 的中文静态文案对
+        // en/ja 用户不友好）。zh 文案保持逐字不变，既有测试断言不受影响。
+        let en = prefer_en();
+        let s = match self {
+            AppError::Config(d) => pick(&format!("配置错误: {d}"), &format!("Config error: {d}")),
+            AppError::InvalidInput(d) => {
+                pick(&format!("无效输入: {d}"), &format!("Invalid input: {d}"))
+            }
+            AppError::Conflict(d) => pick(&format!("并发冲突: {d}"), &format!("Conflict: {d}")),
+            AppError::Io { path, source } => pick(
+                &format!("IO 错误: {path}: {source}"),
+                &format!("IO error: {path}: {source}"),
+            ),
+            AppError::IoContext { context, source } => pick(
+                &format!("{context}: {source}"),
+                &format!("{context}: {source}"),
+            ),
+            AppError::Json { path, source } => pick(
+                &format!("JSON 解析错误: {path}: {source}"),
+                &format!("JSON parse error: {path}: {source}"),
+            ),
+            AppError::JsonSerialize { source } => pick(
+                &format!("JSON 序列化失败: {source}"),
+                &format!("JSON serialization failed: {source}"),
+            ),
+            AppError::Toml { path, source } => pick(
+                &format!("TOML 解析错误: {path}: {source}"),
+                &format!("TOML parse error: {path}: {source}"),
+            ),
+            AppError::Lock(d) => pick(
+                &format!("锁获取失败: {d}"),
+                &format!("Lock acquisition failed: {d}"),
+            ),
+            AppError::McpValidation(d) => pick(
+                &format!("MCP 校验失败: {d}"),
+                &format!("MCP validation failed: {d}"),
+            ),
+            AppError::Message(d) => d.clone(),
+            AppError::HttpStatus { status, body } => pick(
+                &format!("HTTP {status}: {body}"),
+                &format!("HTTP {status}: {body}"),
+            ),
+            AppError::Localized {
+                zh, en: en_text, ..
+            } => {
+                if en {
+                    en_text.clone()
+                } else {
+                    zh.clone()
+                }
+            }
+            AppError::Database(d) => {
+                pick(&format!("数据库错误: {d}"), &format!("Database error: {d}"))
+            }
+            AppError::OmoConfigNotFound => pick("OMO 配置文件不存在", "OMO config file not found"),
+            AppError::AllProvidersCircuitOpen => pick(
+                "所有供应商已熔断，无可用渠道",
+                "All providers are circuit-broken; no channel available",
+            ),
+            AppError::NoProvidersConfigured => pick("未配置供应商", "No providers configured"),
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl std::error::Error for AppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AppError::Io { source, .. } | AppError::IoContext { source, .. } => Some(source),
+            AppError::Json { source, .. } => Some(source),
+            AppError::JsonSerialize { source } => Some(source),
+            AppError::Toml { source, .. } => Some(source),
+            _ => None,
         }
     }
 }

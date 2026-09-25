@@ -84,10 +84,16 @@ describe("Claude Fable subscription quota", () => {
         ],
         inline,
       );
-      expect(screen.getByText("12%")).toBeInTheDocument();
-      expect(screen.getByText("25%")).toBeInTheDocument();
+      // inline 时百分比是独立文本；展开态是"已用 12%" → 用尾部匹配兼容两种布局
+      expect(screen.getByText(/12%$/)).toBeInTheDocument();
+      expect(screen.getByText(/25%$/)).toBeInTheDocument();
       const row = screen.getByText(/^Fable:?$/).parentElement!;
-      expect(within(row).getByText("95%")).toHaveClass("text-red-500");
+      // 百分比带上了「已用」口径（裸 42% 分不清已用还是剩余），所以断言尾部百分比
+      expect(within(row).getByText(/95%$/)).toHaveClass("text-red-500");
+      if (!inline) {
+        // 展开态同时给出剩余口径：100 - 95 = 5
+        expect(within(row).getByText("剩余 5%")).toBeInTheDocument();
+      }
       expect(
         within(row).getByText(inline ? "2d12h" : "2d12h后重置"),
       ).toBeInTheDocument();
@@ -97,14 +103,15 @@ describe("Claude Fable subscription quota", () => {
   it("shows an unused Fable limit without a reset countdown", () => {
     renderQuota([{ name: "seven_day_fable", utilization: 0, resetsAt: null }]);
     const row = screen.getByText("Fable:").parentElement!;
-    expect(within(row).getByText("0%")).toHaveClass("text-green-600");
+    // 百分比 span 现在是"已用 0%"（口径标注 + 数值在同一 span）
+    expect(within(row).getByText(/0%$/)).toHaveClass("text-green-600");
     expect(row.querySelector("svg")).toBeNull();
   });
 
   it("keeps legacy quotas visible without inventing a Fable limit", () => {
     renderQuota(baseTiers);
-    expect(screen.getByText("12%")).toBeInTheDocument();
-    expect(screen.getByText("25%")).toBeInTheDocument();
+    expect(screen.getByText(/12%$/)).toBeInTheDocument();
+    expect(screen.getByText(/25%$/)).toBeInTheDocument();
     expect(screen.queryByText(/Fable/)).not.toBeInTheDocument();
   });
 

@@ -215,45 +215,73 @@ struct CopilotModelsResponseItem {
     model_picker_enabled: bool,
 }
 
-/// Copilot 认证错误
-#[derive(Debug, thiserror::Error)]
+/// Copilot 认证错误（手写 Display 以按设置语言输出）
+#[derive(Debug)]
 pub enum CopilotAuthError {
-    #[error("设备码流程未启动")]
     DeviceFlowNotStarted,
-
-    #[error("等待用户授权中")]
     AuthorizationPending,
-
-    #[error("用户拒绝授权")]
     AccessDenied,
-
-    #[error("设备码已过期")]
     ExpiredToken,
-
-    #[error("GitHub 令牌无效或已过期")]
     GitHubTokenInvalid,
-
-    #[error("Copilot 令牌获取失败: {0}")]
     CopilotTokenFetchFailed(String),
-
-    #[error("网络错误: {0}")]
     NetworkError(String),
-
-    #[error("解析错误: {0}")]
     ParseError(String),
-
-    #[error("IO 错误: {0}")]
     IoError(String),
-
-    #[error("用户未订阅 Copilot")]
     NoCopilotSubscription,
-
-    #[error("账号不存在: {0}")]
     AccountNotFound(String),
-
-    #[error("无效的 GitHub 域名: {0}")]
     InvalidDomain(String),
 }
+
+impl std::fmt::Display for CopilotAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CopilotAuthError::DeviceFlowNotStarted => {
+                crate::error::pick("设备码流程未启动", "Device-code flow not started")
+            }
+            CopilotAuthError::AuthorizationPending => {
+                crate::error::pick("等待用户授权中", "Waiting for user authorization")
+            }
+            CopilotAuthError::AccessDenied => {
+                crate::error::pick("用户拒绝授权", "User denied authorization")
+            }
+            CopilotAuthError::ExpiredToken => {
+                crate::error::pick("设备码已过期", "Device code has expired")
+            }
+            CopilotAuthError::GitHubTokenInvalid => crate::error::pick(
+                "GitHub 令牌无效或已过期",
+                "GitHub token is invalid or expired",
+            ),
+            CopilotAuthError::CopilotTokenFetchFailed(d) => crate::error::pick(
+                &format!("Copilot 令牌获取失败: {d}"),
+                &format!("Failed to fetch the Copilot token: {d}"),
+            ),
+            CopilotAuthError::NetworkError(d) => {
+                crate::error::pick(&format!("网络错误: {d}"), &format!("Network error: {d}"))
+            }
+            CopilotAuthError::ParseError(d) => {
+                crate::error::pick(&format!("解析错误: {d}"), &format!("Parse error: {d}"))
+            }
+            CopilotAuthError::IoError(d) => {
+                crate::error::pick(&format!("IO 错误: {d}"), &format!("IO error: {d}"))
+            }
+            CopilotAuthError::NoCopilotSubscription => crate::error::pick(
+                "用户未订阅 Copilot",
+                "The user is not subscribed to Copilot",
+            ),
+            CopilotAuthError::AccountNotFound(d) => crate::error::pick(
+                &format!("账号不存在: {d}"),
+                &format!("Account not found: {d}"),
+            ),
+            CopilotAuthError::InvalidDomain(d) => crate::error::pick(
+                &format!("无效的 GitHub 域名: {d}"),
+                &format!("Invalid GitHub domain: {d}"),
+            ),
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl std::error::Error for CopilotAuthError {}
 
 impl From<reqwest::Error> for CopilotAuthError {
     fn from(err: reqwest::Error) -> Self {

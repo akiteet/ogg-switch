@@ -15,6 +15,24 @@ pub async fn execute_usage_script(
     user_id: Option<&str>,
     template_type: Option<&str>,
 ) -> Result<Value, AppError> {
+    // 原生模板（balance / token_plan / official_subscription / github_copilot）由
+    // `commands/provider.rs` 的专用分支处理，**不携带脚本代码**。落到这里说明模板
+    // 路由出了问题——给出明确的错误，而不是让 JS 引擎报误导性的"解析配置失败"
+    // （实测踩坑：balance 模板 + 空 code 被当通用脚本 eval）。
+    if script_code.trim().is_empty() {
+        return Err(AppError::localized(
+            "usage_script.empty_code_native_template",
+            format!(
+                "模板「{}」不使用脚本内容：该模板由专用查询路径处理，但本次查询未能进入对应分支。请更新 OGG Switch 或重新保存该供应商的用量查询配置。",
+                template_type.unwrap_or("(未指定)")
+            ),
+            format!(
+                "The \"{}\" template does not use script code: it is handled by a dedicated query path, but the query did not reach that path. Update OGG Switch or re-save the provider's usage configuration.",
+                template_type.unwrap_or("(unspecified)")
+            ),
+        ));
+    }
+
     // 检测是否为自定义模板模式
     // 优先使用前端传递的 template_type
     let is_custom_template = template_type.map(|t| t == "custom").unwrap_or(false);

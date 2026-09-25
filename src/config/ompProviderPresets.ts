@@ -5,6 +5,10 @@
  * - OAuth：omp 凭据库支持登录的供应商，无需填 baseUrl / apiKey / 模型
  * - API Key：其余全部（官方 API、聚合站、中转站、本地推理），走 baseUrl + apiKey
  *
+ * 内置 / 常见分层（`tier`，见下方 COMMON_PRESET_IDS）：
+ * - builtin：omp 官方 docs/providers.md 列出的供应商（oauth 清单 + 环境变量表 + 本地引擎）
+ * - common：OGG 增补的常见供应商——providers.md 未收录（腾讯混元、豆包、one-api 模板等）
+ *
  * 注意：OAuth 预设的 oauthProviderId 必须与 `omp auth-broker list --json`
  * 返回的真实 id 完全一致，否则查不到登录态。
  */
@@ -715,6 +719,20 @@ export const API_PRESETS: OmpProviderPreset[] = [
     defaultApi: "openai-completions",
     requiresApiKey: true,
     envKeyName: "CEREBRAS_API_KEY",
+  },
+  {
+    // omp 源码 auth 规则（packages/catalog/src/compat/rules/auth/abliteration.kdl）：
+    // api-key 登录，models 端点 https://api.abliteration.ai/v1/models
+    id: "abliteration",
+    name: "Abliteration",
+    type: "api-key",
+    category: "api",
+    description: "Open model hosting by Abliteration",
+    websiteUrl: "https://abliteration.ai",
+    icon: "abliteration",
+    defaultBaseUrl: "https://api.abliteration.ai/v1",
+    defaultApi: "openai-completions",
+    requiresApiKey: true,
   },
 ];
 
@@ -1481,6 +1499,22 @@ export const GATEWAY_PRESETS: OmpProviderPreset[] = [
     requiresApiKey: true,
     envKeyName: "ZHIPU_API_KEY",
   },
+  {
+    // omp 源码 auth 规则（packages/catalog/src/compat/rules/auth/commandcode.kdl）：
+    // api-key 登录（COMMAND_CODE_API_KEY / COMMANDCODE_API_KEY），
+    // baseUrl 依据其注释里公开的 GET /provider/v1/models 端点推断
+    id: "commandcode",
+    name: "Command Code",
+    type: "api-key",
+    category: "gateway",
+    description: "Command Code 中转（Provider API Key）",
+    websiteUrl: "https://commandcode.ai",
+    icon: "commandcode",
+    defaultBaseUrl: "https://commandcode.ai/provider/v1",
+    defaultApi: "openai-completions",
+    requiresApiKey: true,
+    envKeyName: "COMMAND_CODE_API_KEY",
+  },
 ];
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1557,14 +1591,58 @@ export const LOCAL_PRESETS: OmpProviderPreset[] = [
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * All OMP presets
+ * 「常见供应商」id 集：OGG 增补预设，不在 omp 官方 providers.md 的内置清单里
+ * （can1357/oh-my-pi@740f3e3 的 oauth 清单 + 环境变量表 + 本地引擎表；
+ * 2026-09-24 逐条比对）。这些供应商多为国内官方 API（混元/豆包/百川…）或
+ * 自建网关模板（one-api/new-api），鉴权仍按上面四数组的方式分组。
+ *
+ * 注意：id 匹配的是各数组条目的 `id`（如 `fireworks-api` 对应文档的 `fireworks`、
+ * `aws-bedrock` 对应 `amazon-bedrock`——同一供应商不同命名按内置处理）。
+ */
+const COMMON_PRESET_IDS: ReadonlySet<string> = new Set([
+  // 国内官方 API（providers.md 未收录）
+  "cohere-api",
+  "perplexity-api",
+  "zhipu",
+  "baichuan",
+  "01ai",
+  "doubao",
+  "qwen",
+  "hunyuan",
+  "replicate",
+  "anyscale",
+  // 聚合站 / 中转站模板
+  "modelscope",
+  "one-api",
+  "new-api",
+  "fastgpt",
+  "runpod",
+  "infermatic",
+  "lepton",
+  "featherless",
+  "together-xyz",
+  "octo",
+  "unify",
+  "portkey",
+  "helicone",
+  "langfuse",
+  "nebius",
+  "lambda",
+  "modal",
+]);
+
+/**
+ * All OMP presets（合并时统一打 tier 标记）
  */
 export const ALL_OMP_PRESETS: OmpProviderPreset[] = [
-  ...SUBSCRIPTION_PRESETS,  // OAuth
-  ...API_PRESETS,           // API Key
-  ...GATEWAY_PRESETS,       // API Key
-  ...LOCAL_PRESETS,         // API Key
-];
+  ...SUBSCRIPTION_PRESETS, // OAuth
+  ...API_PRESETS, // API Key
+  ...GATEWAY_PRESETS, // API Key
+  ...LOCAL_PRESETS, // API Key
+].map((preset) => ({
+  ...preset,
+  tier: COMMON_PRESET_IDS.has(preset.id) ? "common" : "builtin",
+}));
 
 /**
  * Find preset by ID

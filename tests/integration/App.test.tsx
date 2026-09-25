@@ -521,4 +521,47 @@ describe("App integration with MSW", () => {
       expect.stringContaining("已复制到供应商库"),
     );
   });
+
+  it("maps the Oh My Pi usage script from the camelCase wire key onto provider meta", async () => {
+    // 回归（v1.1.3）：后端 `OmpProviderConfig` 是 camelCase 线格式（`usageScript`），
+    // 前端曾按 snake_case 读 → meta.usage_script 恒空 → 卡片用量区从未渲染、
+    // 用量脚本弹窗也永远回填不出已保存的脚本。
+    localStorage.setItem("ogg-switch-last-app", "omp");
+    setOmpProviders([
+      {
+        id: "super-nb",
+        name: "SUPER NB",
+        type: "api-key",
+        category: "api",
+        models: [],
+        baseUrl: "https://api.super-nb.me/v1",
+        apiKey: "snb_test",
+        api: "openai-completions",
+        inConfig: true,
+        usageScript: {
+          enabled: true,
+          language: "javascript",
+          code: "return { remaining: 42, unit: 'CNY' }",
+          templateType: "general",
+        },
+      },
+    ]);
+
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-list").textContent).toContain(
+        "super-nb",
+      ),
+    );
+
+    // ProviderList 的 mock 会把 providers 原样 JSON 化，这里直接断言映射后的 meta：
+    // 用量脚本必须以通用 Provider.meta 的 snake_case 键出现，且保留 enabled/脚本内容。
+    const dumped = screen.getByTestId("provider-list").textContent ?? "";
+    expect(dumped).toContain('"usage_script":{"enabled":true');
+    expect(dumped).toContain("return { remaining: 42, unit: 'CNY' }");
+    // 本文件首个跑到 `await import("@/App")` 的用例要付整棵 App 的 transform 成本，
+    // 这台机器上会吃掉默认 5s 超时（同文件既有用例更慢）；给个明确上限避免假超时。
+  }, 20_000);
 });

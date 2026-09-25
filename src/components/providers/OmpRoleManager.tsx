@@ -98,7 +98,7 @@ interface OmpRoleManagerProps {
 type RoleMeta = {
   icon: typeof Settings;
   label: string;
-  description: string;
+  descKey: string;
   color: string;
   /**
    * 该角色接受的模型 kind（OMP `model-roles.ts` 的 accepts 规则）。
@@ -108,88 +108,89 @@ type RoleMeta = {
 };
 
 // Role metadata（label 用 OMP 官方 name，便于与 OMP TUI 对照）
+// description 存 i18n key（四语言翻译见 locales 的 omp.roleManager.roleDesc.*）
 const ROLE_META: Record<OmpRole, RoleMeta> = {
   default: {
     icon: Settings,
     label: "Default",
-    description: "通用模型，适合大多数任务",
+    descKey: "omp.roleManager.roleDesc.default",
     color: "text-blue-600 dark:text-blue-400",
     accepts: ["chat"],
   },
   smol: {
     icon: Zap,
     label: "Smol (Fast)",
-    description: "快速便宜的模型，适合简单任务",
+    descKey: "omp.roleManager.roleDesc.smol",
     color: "text-green-600 dark:text-green-400",
     accepts: ["chat"],
   },
   slow: {
     icon: Brain,
     label: "Slow (Thinking)",
-    description: "高质量推理模型，适合复杂任务",
+    descKey: "omp.roleManager.roleDesc.slow",
     color: "text-purple-600 dark:text-purple-400",
     accepts: ["chat"],
   },
   vision: {
     icon: Eye,
     label: "Vision",
-    description: "图像理解和视觉任务",
+    descKey: "omp.roleManager.roleDesc.vision",
     color: "text-indigo-600 dark:text-indigo-400",
     accepts: ["chat"],
   },
   plan: {
     icon: Lightbulb,
     label: "Plan (Architect)",
-    description: "规划和架构设计专用",
+    descKey: "omp.roleManager.roleDesc.plan",
     color: "text-yellow-600 dark:text-yellow-400",
     accepts: ["chat"],
   },
   commit: {
     icon: GitCommit,
     label: "Commit",
-    description: "Git 提交消息生成",
+    descKey: "omp.roleManager.roleDesc.commit",
     color: "text-orange-600 dark:text-orange-400",
     accepts: ["chat"],
   },
   tiny: {
     icon: Feather,
     label: "Tiny",
-    description: "极轻量任务（可用 tiny 或 chat 模型）",
+    descKey: "omp.roleManager.roleDesc.tiny",
     color: "text-gray-600 dark:text-gray-400",
     accepts: ["chat", "tiny"],
   },
   memory: {
     icon: Database,
     label: "Memory",
-    description: "记忆与历史压缩等后台记忆任务",
+    descKey: "omp.roleManager.roleDesc.memory",
     color: "text-rose-600 dark:text-rose-400",
     accepts: ["chat", "tiny"],
   },
   task: {
     icon: Boxes,
     label: "Task (Subtask)",
-    description: "子任务执行",
+    descKey: "omp.roleManager.roleDesc.task",
     color: "text-cyan-600 dark:text-cyan-400",
     accepts: ["chat"],
   },
   advisor: {
     icon: MessageCircle,
     label: "Advisor",
-    description: "咨询和建议",
+    descKey: "omp.roleManager.roleDesc.advisor",
     color: "text-teal-600 dark:text-teal-400",
     accepts: ["chat"],
   },
   image: {
     icon: ImageIcon,
     label: "Image",
-    description: "图像生成（kind: image）",
+    descKey: "omp.roleManager.roleDesc.image",
     color: "text-pink-600 dark:text-pink-400",
     accepts: ["image"],
   },
   web: {
     icon: Globe,
     label: "Web",
-    description: "联网搜索后端（kind: search）",
+    descKey: "omp.roleManager.roleDesc.web",
     color: "text-sky-600 dark:text-sky-400",
     // OMP 的 acceptsWeb 是「search 或带 webSearch 标记的 chat 模型」，而 webSearch
     // 标记在目录 JSON 里看不到；只列 search 才能保证选出来的值一定被 OMP 采纳。
@@ -198,21 +199,21 @@ const ROLE_META: Record<OmpRole, RoleMeta> = {
   speech: {
     icon: Volume2,
     label: "Speech",
-    description: "语音合成 TTS（kind: tts）",
+    descKey: "omp.roleManager.roleDesc.speech",
     color: "text-amber-600 dark:text-amber-400",
     accepts: ["tts"],
   },
   dictation: {
     icon: Mic,
     label: "Dictation",
-    description: "语音识别 STT（kind: stt）",
+    descKey: "omp.roleManager.roleDesc.dictation",
     color: "text-violet-600 dark:text-violet-400",
     accepts: ["stt"],
   },
   judge: {
     icon: Scale,
     label: "Judge",
-    description: "评审/判定（kind: judge）",
+    descKey: "omp.roleManager.roleDesc.judge",
     color: "text-lime-600 dark:text-lime-400",
     accepts: ["judge", "tiny", "chat"],
   },
@@ -225,7 +226,8 @@ function roleMeta(role: string): RoleMeta {
   return {
     icon: Layers,
     label: role,
-    description: "自定义角色（config.yml 里的自定义 modelRoles 键）",
+    // 复用自定义角色分组的 hint 文案（语义相同，不另开 key）
+    descKey: "omp.roleManager.groupCustomHint",
     color: "text-muted-foreground",
     accepts: [],
   };
@@ -662,7 +664,7 @@ export function OmpRoleManager({
                           <div>
                             <div className="font-medium">{meta.label}</div>
                             <div className="text-xs text-muted-foreground">
-                              {meta.description}
+                              {t(meta.descKey)}
                             </div>
                           </div>
                         </div>
@@ -736,7 +738,7 @@ export function OmpRoleManager({
               )}
             </DialogTitle>
             <DialogDescription>
-              {editingRole && roleMeta(effectiveRole ?? editingRole).description}
+              {editingRole && t(roleMeta(effectiveRole ?? editingRole).descKey)}
             </DialogDescription>
           </DialogHeader>
 

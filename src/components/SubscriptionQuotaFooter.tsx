@@ -21,7 +21,11 @@ interface SubscriptionQuotaViewProps {
   inline?: boolean;
 }
 
-/** 已知 tier 名称的显示映射（官方订阅 + Token Plan 共用） */
+/**
+ * 已知 tier 名称的显示映射（官方订阅 + Token Plan 共用）。
+ * `current_plan:` 前缀的 tier（套餐名兜底，见后端 `TIER_CURRENT_PLAN_PREFIX`）
+ * 在 `tierLabel()` 里单独处理。
+ */
 export const TIER_I18N_KEYS: Record<string, string> = {
   five_hour: "subscription.fiveHour",
   seven_day: "subscription.sevenDay",
@@ -34,6 +38,9 @@ export const TIER_I18N_KEYS: Record<string, string> = {
   gemini_pro: "subscription.geminiPro",
   gemini_flash: "subscription.geminiFlash",
   gemini_flash_lite: "subscription.geminiFlashLite",
+  // Antigravity 两大模型族（对齐其官方 UI 的分组）
+  gemini_family: "subscription.geminiFamily",
+  claude_gpt_family: "subscription.claudeGptFamily",
   // Token Plan（five_hour 已在上方官方映射中）
   weekly_limit: "subscription.sevenDay",
   // 火山方舟 Agent Plan / Coding Plan 的月窗口
@@ -49,6 +56,18 @@ export function utilizationColor(utilization: number): string {
   if (utilization >= 90) return "text-red-500 dark:text-red-400";
   if (utilization >= 70) return "text-orange-500 dark:text-orange-400";
   return "text-green-600 dark:text-green-400";
+}
+
+/**
+ * tier 的显示标签。`current_plan:<套餐名>` 是"套餐名兜底"（无百分比数据，
+ * 见后端 `TIER_CURRENT_PLAN_PREFIX`），直接展示套餐名并加「套餐」前缀。
+ */
+export function tierLabel(tier: QuotaTier, t: (key: string) => string): string {
+  if (tier.name.startsWith("current_plan:")) {
+    const plan = tier.name.slice("current_plan:".length);
+    return `${t("subscription.currentPlan")} ${plan}`;
+  }
+  return TIER_I18N_KEYS[tier.name] ? t(TIER_I18N_KEYS[tier.name]) : tier.name;
 }
 
 /** 计算倒计时的纯时间字符串，如 "2h30m"、"3d12h" */
@@ -69,7 +88,7 @@ export function countdownStr(resetsAt: string | null): string | null {
 }
 
 /** 格式化重置时间为倒计时文本（带 i18n 模板） */
-function formatResetTime(
+export function formatResetTime(
   resetsAt: string | null,
   t: (key: string, options?: Record<string, string>) => string,
 ): string | null {
@@ -97,6 +116,64 @@ function formatRelativeTime(
 }
 
 /**
+ * 凭据/数据缺失时的**可见**说明。
+ *
+ * 这几条分支以前一律 `return null`：最典型的是 Grok Build —— 本机没有
+ * `~/.grok/auth.json` 时后端返回 `credentialStatus="not_found"`，卡片上
+ * 「什么都没有」，用户既不知道是「没登录」还是「功能坏了」（2026-09-24 报障）。
+ * 现在统一渲染一行灰色说明 + 刷新按钮，文案里点明该跑哪条 CLI 命令。
+ */
+const QuotaHint: React.FC<{
+  message: string;
+  hint?: string;
+  loading: boolean;
+  refetch: () => void;
+  inline?: boolean;
+}> = ({ message, hint, loading, refetch, inline }) => {
+  const { t } = useTranslation();
+
+  const text = (
+    <>
+      <AlertCircle
+        size={inline ? 12 : 14}
+        className="text-muted-foreground flex-shrink-0"
+      />
+      <span className="text-muted-foreground">{message}</span>
+      {hint ? (
+        <span className="text-muted-foreground/70">{hint}</span>
+      ) : null}
+    </>
+  );
+  const refresh = (
+    <button
+      onClick={() => refetch()}
+      disabled={loading}
+      className="p-1 rounded hover:bg-muted transition-colors disabled:opacity-50 flex-shrink-0"
+      title={t("subscription.refresh")}
+    >
+      <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+    </button>
+  );
+
+  if (inline) {
+    return (
+      <div className="inline-flex items-center gap-2 text-xs rounded-lg border border-border-default bg-card px-3 py-2 shadow-sm">
+        <div className="flex items-center gap-1.5">{text}</div>
+        {refresh}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 rounded-xl border border-border-default bg-card px-4 py-3 shadow-sm">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-2">{text}</div>
+        {refresh}
+      </div>
+    </div>
+  );
+};
+
+/**
  * 纯展示组件：渲染 SubscriptionQuota 的 5 种状态（not_found / parse_error /
  * expired / API 失败 / 成功），支持 inline / expanded 两种布局。
  *
@@ -121,11 +198,38 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
     return () => clearInterval(interval);
   }, [quota?.queriedAt]);
 
-  // 无凭据 → 不显示
-  if (!quota || quota.credentialStatus === "not_found") return null;
+  // 还没拿到数据（查询未启用/首次加载中）→ 不占位
+  if (!quota) return null;
 
-  // 凭据解析错误 → 不显示（静默）
-  if (quota.credentialStatus === "parse_error") return null;
+  // 未查到凭据 → 可见说明（不再静默消失：用户需要知道"去登录哪个 CLI"）
+  if (quota.credentialStatus === "not_found") {
+    return (
+      <QuotaHint
+        message={t("subscription.credentialMissing")}
+        hint={t("subscription.credentialMissingHint", {
+          tool: appIdForExpiredHint,
+        })}
+        loading={loading}
+        refetch={refetch}
+        inline={inline}
+      />
+    );
+  }
+
+  // 凭据无法解析 → 可见说明（重新登录即可修复）
+  if (quota.credentialStatus === "parse_error") {
+    return (
+      <QuotaHint
+        message={t("subscription.credentialParseError")}
+        hint={t("subscription.credentialMissingHint", {
+          tool: appIdForExpiredHint,
+        })}
+        loading={loading}
+        refetch={refetch}
+        inline={inline}
+      />
+    );
+  }
 
   // 凭据过期
   if (quota.credentialStatus === "expired" && !quota.success) {
@@ -135,6 +239,12 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
           <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
             <AlertCircle size={12} />
             <span>{t("subscription.expired")}</span>
+            {/* 给出可行动的指引：光说"过期"用户不知道下一步该干什么 */}
+            <span className="text-amber-500/70 dark:text-amber-400/70">
+              {t("subscription.credentialMissingHint", {
+                tool: appIdForExpiredHint,
+              })}
+            </span>
           </div>
           <button
             onClick={() => refetch()}
@@ -216,7 +326,17 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   const tiers = (quota.tiers || []).filter(
     (tier) => tier.name in TIER_I18N_KEYS,
   );
-  if (tiers.length === 0) return null;
+  // 凭据有效但上游没给出可显示的窗口 → 也说一句，避免又退回"什么都没有"
+  if (tiers.length === 0) {
+    return (
+      <QuotaHint
+        message={t("subscription.noTiers")}
+        loading={loading}
+        refetch={refetch}
+        inline={inline}
+      />
+    );
+  }
 
   // ── inline 模式：紧凑两行显示 ──
   if (inline) {
@@ -248,7 +368,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
           {tiers
             .filter((tier) => !HIDDEN_INLINE_TIERS.has(tier.name))
             .map((tier) => (
-              <TierBadge key={tier.name} tier={tier} t={t} />
+              <TierBadge key={tier.key ?? tier.name} tier={tier} t={t} />
             ))}
         </div>
       </div>
@@ -282,7 +402,7 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
 
       <div className="flex flex-col gap-2">
         {tiers.map((tier) => (
-          <TierBar key={tier.name} tier={tier} t={t} />
+          <TierBar key={tier.key ?? tier.name} tier={tier} t={t} />
         ))}
       </div>
 
@@ -291,12 +411,14 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
         <div className="mt-2 pt-2 border-t border-border-default text-xs text-gray-500 dark:text-gray-400">
           <span className="font-medium">{t("subscription.extraUsage")}: </span>
           <span className="tabular-nums">
-            {quota.extraUsage.currency === "USD" ? "$" : ""}
+            {/* 同样标口径：哪个是已用、哪个是上限 */}
+            {t("subscription.used")} {quota.extraUsage.currency === "USD" ? "$" : ""}
             {(quota.extraUsage.usedCredits ?? 0).toFixed(2)}
             {quota.extraUsage.monthlyLimit != null && (
               <>
                 {" "}
-                / {quota.extraUsage.currency === "USD" ? "$" : ""}
+                / {t("subscription.upperLimit")}{" "}
+                {quota.extraUsage.currency === "USD" ? "$" : ""}
                 {quota.extraUsage.monthlyLimit.toFixed(2)}
               </>
             )}
@@ -307,29 +429,47 @@ export const SubscriptionQuotaView: React.FC<SubscriptionQuotaViewProps> = ({
   );
 };
 
+/** 已用百分比（后端 `utilization` 一律是"已用 %"）→ 剩余百分比，clamp 到 0–100 */
+export function remainingPercent(utilization: number): number {
+  return Math.max(0, Math.min(100, 100 - utilization));
+}
+
 /** inline 模式下的单个 tier 显示 */
 export const TierBadge: React.FC<{
   tier: QuotaTier;
   t: (key: string, options?: Record<string, unknown>) => string;
 }> = ({ tier, t }) => {
-  const label = TIER_I18N_KEYS[tier.name]
-    ? t(TIER_I18N_KEYS[tier.name])
-    : tier.name;
+  const label = tierLabel(tier, t);
   const countdown = countdownStr(tier.resetsAt);
+  // 套餐名兜底 tier（current_plan:）没有百分比数据，只显示套餐名本身
+  const isPlanOnly = tier.name.startsWith("current_plan:");
 
   const hasUsd = tier.usedValueUsd != null && tier.maxValueUsd != null;
 
   return (
     <div className="flex items-center gap-0.5">
-      <span className="text-gray-500 dark:text-gray-400">{label}:</span>
-      <span
-        className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
-      >
-        {t("subscription.utilization", { value: Math.round(tier.utilization) })}
-      </span>
-      {hasUsd && (
+      {!isPlanOnly && (
+        <span className="text-gray-500 dark:text-gray-400">{label}:</span>
+      )}
+      {!isPlanOnly && (
+        <span
+          className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
+        >
+          {t("subscription.used")}{" "}
+          {t("subscription.utilization", {
+            value: Math.round(tier.utilization),
+          })}
+        </span>
+      )}
+      {isPlanOnly && (
+        <span className="font-semibold text-gray-500 dark:text-gray-400">
+          {label}
+        </span>
+      )}
+      {hasUsd && !isPlanOnly && (
         <span className="text-muted-foreground/60">
-          (${tier.usedValueUsd!.toFixed(2)}/${tier.maxValueUsd!.toFixed(2)})
+          ({t("subscription.used")} ${tier.usedValueUsd!.toFixed(2)}/
+          {t("subscription.upperLimit")} ${tier.maxValueUsd!.toFixed(2)})
         </span>
       )}
       {countdown && (
@@ -347,10 +487,22 @@ const TierBar: React.FC<{
   tier: QuotaTier;
   t: (key: string, options?: Record<string, unknown>) => string;
 }> = ({ tier, t }) => {
-  const label = TIER_I18N_KEYS[tier.name]
-    ? t(TIER_I18N_KEYS[tier.name])
-    : tier.name;
+  const label = tierLabel(tier, t);
   const resetText = formatResetTime(tier.resetsAt, t);
+  const isPlanOnly = tier.name.startsWith("current_plan:");
+
+  if (isPlanOnly) {
+    return (
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium text-gray-500 dark:text-gray-400">
+          {label}
+        </span>
+        <span className="text-[10px] text-muted-foreground/70">
+          {t("subscription.noWindowData")}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-3 text-xs">
@@ -376,13 +528,21 @@ const TierBar: React.FC<{
       </div>
 
       <div
-        className="flex items-center gap-2 flex-shrink-0"
-        style={{ width: "30%" }}
+        className="flex items-center gap-2 flex-shrink-0 whitespace-nowrap"
+        style={{ width: "34%" }}
       >
+        {/* 展开态把两个口径都摆出来：后端给的是"已用"，剩余由 100-已用 得出 */}
         <span
           className={`font-semibold tabular-nums ${utilizationColor(tier.utilization)}`}
         >
-          {Math.round(tier.utilization)}%
+          {t("subscription.used")}{" "}
+          {t("subscription.utilization", { value: Math.round(tier.utilization) })}
+        </span>
+        <span className="text-muted-foreground">
+          {t("subscription.remaining")}{" "}
+          {t("subscription.utilization", {
+            value: Math.round(remainingPercent(tier.utilization)),
+          })}
         </span>
         {resetText && (
           <span
@@ -395,6 +555,16 @@ const TierBar: React.FC<{
       </div>
     </div>
   );
+};
+
+/**
+ * appId → 用户要运行的 CLI 名（用于 `subscription.expiredHint` /
+ * `subscription.credentialMissingHint` 的 {tool} 插值）。
+ * Grok Build 的命令是 `grok`，Antigravity 的是 `agy`；其余 appId 与命令同名。
+ */
+const CLI_NAME_BY_APP: Partial<Record<AppId, string>> = {
+  grokbuild: "grok",
+  antigravity: "agy",
 };
 
 /**
@@ -425,8 +595,9 @@ const SubscriptionQuotaFooter: React.FC<SubscriptionQuotaFooterProps> = ({
       quota={quota}
       loading={loading}
       refetch={refetch}
-      // expiredHint 里的 {tool} 是 CLI 命令名：Grok 的命令是 `grok` 而非 appId
-      appIdForExpiredHint={appId === "grokbuild" ? "grok" : appId}
+      // hint 文案里的 {tool} 是用户要运行的 CLI 名，不是 appId：
+      // Grok Build 的命令是 `grok`，Antigravity 的是 `agy`
+      appIdForExpiredHint={CLI_NAME_BY_APP[appId] ?? appId}
       inline={inline}
     />
   );

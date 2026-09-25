@@ -870,6 +870,13 @@ pub struct OmpQuotaWindow {
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<i64>,
+    /// 账号标识（`oauth|account:<uuid>|email:…`）。卡片按 provider 聚合时用它去重，
+    /// 多账号同一窗口才能各自显示（v1.1.3 接到卡片时补的字段，此前只在 GROUP BY 用）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<String>,
+    /// 窗口的完整 id（如 `xai-oauth:credits:1w`），比 `label` 更适合做 tier 身份。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_id: Option<String>,
 }
 
 /// 读取 OMP 配额窗口（usage_history），不是 token。client_usage 为空时给看板展示。
@@ -910,8 +917,16 @@ fn list_omp_quota_windows_from(path: &std::path::Path) -> Result<Vec<OmpQuotaWin
     let label_col = ["window_label", "label"]
         .into_iter()
         .find(|c| columns.iter().any(|col| col.eq_ignore_ascii_case(c)));
+    let account_col = ["account_key", "account"]
+        .into_iter()
+        .find(|c| columns.iter().any(|col| col.eq_ignore_ascii_case(c)));
+    let limit_col = ["limit_id", "limit"]
+        .into_iter()
+        .find(|c| columns.iter().any(|col| col.eq_ignore_ascii_case(c)));
     let resets_expr = resets_col.unwrap_or("NULL");
     let label_expr = label_col.unwrap_or("NULL");
+    let account_expr = account_col.unwrap_or("NULL");
+    let limit_expr = limit_col.unwrap_or("NULL");
     let group_cols = ["account_key", "limit_id", "provider"]
         .into_iter()
         .filter(|c| columns.iter().any(|col| col.eq_ignore_ascii_case(c)))
@@ -922,7 +937,7 @@ fn list_omp_quota_windows_from(path: &std::path::Path) -> Result<Vec<OmpQuotaWin
         group_cols.join(", ")
     };
     let sql = format!(
-        "SELECT {provider_col}, {fraction_col}, {label_expr}, {resets_expr}
+        "SELECT {provider_col}, {fraction_col}, {label_expr}, {resets_expr}, {account_expr}, {limit_expr}
          FROM usage_history
          WHERE rowid IN (
            SELECT MAX(rowid) FROM usage_history GROUP BY {group_expr}
@@ -940,6 +955,8 @@ fn list_omp_quota_windows_from(path: &std::path::Path) -> Result<Vec<OmpQuotaWin
                 used_fraction: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
                 label: row.get::<_, Option<String>>(2).ok().flatten(),
                 resets_at: row.get::<_, Option<i64>>(3).ok().flatten(),
+                account_key: row.get::<_, Option<String>>(4).ok().flatten(),
+                limit_id: row.get::<_, Option<String>>(5).ok().flatten(),
             })
         })
         .map_err(|e| AppError::Database(format!("读取 usage_history 失败: {e}")))?;

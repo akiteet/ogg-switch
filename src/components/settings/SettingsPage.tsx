@@ -434,15 +434,10 @@ export function SettingsPage({
                             <RotateCcw className="h-5 w-5 text-amber-500" />
                             <div className="text-left">
                               <h3 className="text-base font-semibold">
-                                {t("settings.advanced.envBackup.title", {
-                                  defaultValue: "环境变量备份",
-                                })}
+                                {t("settings.advanced.envBackup.title")}
                               </h3>
                               <p className="text-xs text-muted-foreground mt-0.5">
-                                {t("settings.advanced.envBackup.description", {
-                                  defaultValue:
-                                    "删除冲突环境变量时自动生成的备份，可对比后恢复",
-                                })}
+                                {t("settings.advanced.envBackup.description")}
                               </p>
                             </div>
                           </div>
@@ -455,9 +450,7 @@ export function SettingsPage({
                             onClick={() => setEnvRestoreOpen(true)}
                           >
                             <RotateCcw className="h-4 w-4" />
-                            {t("settings.advanced.envBackup.open", {
-                              defaultValue: "查看与恢复",
-                            })}
+                            {t("settings.advanced.envBackup.open")}
                           </Button>
                         </AccordionContent>
                       </AccordionItem>

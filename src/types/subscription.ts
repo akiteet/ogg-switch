@@ -11,6 +11,12 @@ export interface QuotaTier {
   usedValueUsd?: number | null;
   maxValueUsd?: number | null;
   planLabel?: string | null;
+  /**
+   * 稳定身份（React key 用），与显示文本解耦。官方订阅 tier 不设（name 即身份）；
+   * OMP 配额窗口由 limitId+accountKey 组合而来，name 则优先用人类可读的
+   * window.label——避免把 `openai-codex:primary` 这类原始 id 当标题展示。
+   */
+  key?: string;
 }
 
 export interface ExtraUsage {

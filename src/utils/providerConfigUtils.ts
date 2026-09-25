@@ -2,6 +2,7 @@
 
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
 import type { CodexApiFormat } from "@/types";
+import i18n from "@/i18n";
 import { deepClone } from "@/utils/deepClone";
 import { normalizeTomlText } from "@/utils/textNormalization";
 import { parse as parseToml } from "smol-toml";
@@ -122,22 +123,23 @@ export interface UpdateCommonConfigResult {
   error?: string;
 }
 
-// 验证JSON配置格式
+// 验证JSON配置格式（fieldLabel 由调用方传已翻译的字段名，缺省用「配置」）
 export const validateJsonConfig = (
   value: string,
-  fieldName: string = "配置",
+  fieldLabel?: string,
 ): string => {
   if (!value.trim()) {
     return "";
   }
+  const field = fieldLabel ?? i18n.t("commonConfig.fieldName.config");
   try {
     const parsed = JSON.parse(value);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return `${fieldName}必须是 JSON 对象`;
+      return i18n.t("commonConfig.mustBeObject", { field });
     }
     return "";
   } catch {
-    return `${fieldName}JSON格式错误，请检查语法`;
+    return i18n.t("commonConfig.invalidJson", { field });
   }
 };
 
@@ -153,7 +155,7 @@ export const updateCommonConfigSnippet = (
   } catch (err) {
     return {
       updatedConfig: jsonString,
-      error: "配置 JSON 解析失败，无法应用通用配置",
+      error: i18n.t("commonConfig.parseFailed"),
     };
   }
 
@@ -164,7 +166,10 @@ export const updateCommonConfigSnippet = (
   }
 
   // 使用统一的验证函数
-  const snippetError = validateJsonConfig(snippetString, "通用配置片段");
+  const snippetError = validateJsonConfig(
+    snippetString,
+    i18n.t("commonConfig.fieldName.snippet"),
+  );
   if (snippetError) {
     return {
       updatedConfig: JSON.stringify(config, null, 2),

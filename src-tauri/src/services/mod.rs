@@ -1,4 +1,5 @@
 pub mod balance;
+pub mod cli_auth_backup;
 pub mod codex_oauth_models;
 pub mod codex_usage_reset;
 pub mod coding_plan;

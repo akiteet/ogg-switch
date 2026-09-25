@@ -55,8 +55,12 @@ type FetchedOmpModel = {
   reasoning?: boolean;
 };
 
-const PROTOCOL_OPTIONS: { value: OmpApiProtocol | ""; label: string }[] = [
-  { value: "", label: "继承供应商" },
+const PROTOCOL_OPTIONS: {
+  value: OmpApiProtocol | "";
+  label: string;
+  labelKey?: string;
+}[] = [
+  { value: "", label: "", labelKey: "omp.protocolInherit" },
   { value: "openai-completions", label: "OpenAI Completions" },
   { value: "openai-responses", label: "OpenAI Responses" },
   { value: "anthropic-messages", label: "Anthropic Messages" },
@@ -359,7 +363,7 @@ export function OmpModelListEditor({
                       <SelectContent>
                         {PROTOCOL_OPTIONS.map((p) => (
                           <SelectItem key={p.value || "inherit"} value={p.value || "__inherit__"}>
-                            {p.label}
+                            {p.labelKey ? t(p.labelKey) : p.label}
                           </SelectItem>
                         ))}
                       </SelectContent>

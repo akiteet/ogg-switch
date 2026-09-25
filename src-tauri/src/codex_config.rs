@@ -3994,6 +3994,10 @@ fn remove_codex_live_auth_after_third_party_switch() {
     if !auth_path.exists() {
         return;
     }
+    // 删除前先备份：这个删除是刻意的（避免第三方切换后把官方 ChatGPT 登录态留在
+    // live 上），但删掉就等于登录态丢失——切回官方时由 `cli_auth_backup` 恢复，
+    // 用户不必重新登录（2026-09-24 报障）。
+    crate::services::cli_auth_backup::backup_cli_auth_logging("codex", &auth_path);
     if let Err(e) = delete_file(&auth_path) {
         log::warn!("Failed to remove auth.json after a third-party Codex switch: {e}");
     }
@@ -4347,6 +4351,50 @@ mod tests {
             }
             let _ = crate::settings::reload_settings();
         }
+    }
+
+    #[test]
+    #[serial]
+    fn official_switch_restores_backed_up_login_and_keeps_it() {
+        // 2026-09-24 报障：切到第三方时 auth.json 被删（刻意），切回官方却没有恢复路径
+        // → 每次都要重新登录。这里锁定修复后的行为：备份 → 删除 → 恢复，且恢复出来的
+        // 官方登录材料不会被"清第三方残留"逻辑误删。
+        let _home = CodexLiveTestHome::new();
+
+        let auth_path = get_codex_auth_path();
+        fs::create_dir_all(auth_path.parent().expect("auth parent")).expect("create codex dir");
+        let login = json!({
+            "tokens": { "access_token": "at", "refresh_token": "rt", "id_token": "id" },
+            "OPENAI_API_KEY": null,
+            "last_refresh": "2026-09-24T00:00:00Z"
+        });
+        fs::write(&auth_path, login.to_string()).expect("seed official login");
+
+        // 切到第三方（preservation off）：先备份再删除
+        assert!(
+            crate::services::cli_auth_backup::backup_cli_auth("codex", &auth_path).unwrap(),
+            "the official login must be backed up before deletion"
+        );
+        remove_codex_live_auth_after_third_party_switch();
+        assert!(!auth_path.exists());
+
+        // 切回官方：恢复登录态
+        assert!(
+            crate::services::cli_auth_backup::restore_cli_auth_if_missing("codex", &auth_path)
+                .unwrap(),
+            "switching back to the official provider must restore the login"
+        );
+
+        // 官方切换后的"清第三方残留"只针对第三方 key，不能把恢复出来的官方登录删掉
+        let removed =
+            clear_stale_codex_live_auth_after_official_switch(&json!({})).expect("clear stale");
+        assert!(
+            !removed,
+            "official login material is not third-party residue"
+        );
+        let kept: Value =
+            serde_json::from_str(&fs::read_to_string(&auth_path).expect("read auth")).unwrap();
+        assert_eq!(kept, login);
     }
 
     #[derive(Debug, PartialEq)]

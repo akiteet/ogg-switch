@@ -6,6 +6,7 @@ import React, {
   useCallback,
   useRef,
 } from "react";
+import { useTranslation } from "react-i18next";
 import type { UpdateInfo } from "../lib/updater";
 import { checkForUpdate } from "../lib/updater";
 import { extractErrorMessage } from "../utils/errorUtils";
@@ -32,6 +33,7 @@ export type UpdateCheckOutcome = "available" | "up-to-date" | "unsupported";
 const UpdateContext = createContext<UpdateContextValue | undefined>(undefined);
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
   const DISMISSED_VERSION_KEY = "ccswitch:update:dismissedVersion";
   const LEGACY_DISMISSED_KEY = "dismissedUpdateVersion"; // 兼容旧键
 
@@ -102,14 +104,17 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err) {
       console.error("检查更新失败:", err);
-      setError(extractErrorMessage(err) || "检查更新失败");
+      setError(
+        extractErrorMessage(err) ||
+          t("update.checkFailed", { defaultValue: "检查更新失败" }),
+      );
       setHasUpdate(false);
       throw err; // 抛出错误让调用方处理
     } finally {
       setIsChecking(false);
       isCheckingRef.current = false;
     }
-  }, []);
+  }, [t]);
 
   const dismissUpdate = useCallback(() => {
     setIsDismissed(true);

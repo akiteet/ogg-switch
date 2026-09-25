@@ -390,3 +390,18 @@ export function useDeleteModelPricing() {
     },
   });
 }
+
+/**
+ * OMP 配额窗口（`~/.omp/agent/agent.db:usage_history`）的共享 hook。
+ *
+ * 卡片（`OmpQuotaFooter`）与用量看板提示（`UsageHero`）共用同一份缓存
+ * （queryKey `["ompQuotaWindows"]`），避免同一数据被两处各自拉取。
+ */
+export function useOmpQuotaWindows(options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["ompQuotaWindows"],
+    queryFn: () => usageApi.getOmpQuotaWindows(),
+    enabled: options?.enabled ?? true,
+    staleTime: 30_000,
+  });
+}

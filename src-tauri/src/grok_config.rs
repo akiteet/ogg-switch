@@ -592,15 +592,23 @@ pub fn write_grok_provider_live(provider: &Provider) -> Result<(), AppError> {
     // 否则 grok CLI 会把官方 token 发往第三方 base_url,持续 401 Invalid token,
     // 触发 401 → 自动 OIDC 登录 → 再 401 的死循环。
     // 顺序要求:先成功写入 config.toml(上面已 return on error),再删 auth.json;
-    // 删除失败只告警,不阻断切换。切回官方时保留 auth.json,无需重新登录。
+    // 删除失败只告警,不阻断切换。
+    //
+    // 但「删掉 = 登录态丢失」曾让用户每次切回官方都要重新 `grok login`，所以删除前
+    // 先把文件备份到 OGG 的备份目录，切回官方时（下面的 else 分支）自动恢复。
+    let auth_path = get_grok_config_dir().join("auth.json");
     if !is_official {
-        let auth_path = get_grok_config_dir().join("auth.json");
+        crate::services::cli_auth_backup::backup_cli_auth_logging("grokbuild", &auth_path);
         if let Err(error) = delete_file(&auth_path) {
             log::warn!(
                 "清理官方登录态失败(不阻断切换) {}: {error}",
                 auth_path.display()
             );
         }
+    } else {
+        // 切回官方：本机 auth.json 缺失时用备份恢复（本机现有文件永远优先——
+        // 用户可能刚重新登录过）。恢复失败只告警，不阻断切换。
+        crate::services::cli_auth_backup::restore_cli_auth_logging("grokbuild", &auth_path);
     }
 
     Ok(())
@@ -893,6 +901,69 @@ context_window = 500000
                 .get("config")
                 .and_then(Value::as_str),
             Some(valid_config())
+        );
+
+        match original_test_home {
+            Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+            None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+        }
+    }
+
+    /// 切第三方会删 auth.json（防官方 token 被发往第三方端点），但删除前必须备份，
+    /// 切回官方时自动恢复——否则用户每次都要重新 `grok login`
+    /// （2026-09-24 报障「每次从第三方切回官方供应商都要重新登录」）。
+    #[test]
+    #[serial]
+    fn third_party_switch_backs_up_auth_and_official_switch_restores_it() {
+        let temp = TempDir::new().expect("temp dir");
+        let original_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+
+        let auth_path = get_grok_config_dir().join("auth.json");
+        fs::create_dir_all(auth_path.parent().expect("auth parent")).expect("create grok dir");
+        let session = r#"{"oidc":{"key":"official-session"}}"#;
+        fs::write(&auth_path, session).expect("seed official session");
+
+        let third_party = Provider::with_id(
+            "relay".to_string(),
+            "Relay".to_string(),
+            json!({ "config": valid_config() }),
+            None,
+        );
+        write_grok_provider_live(&third_party).expect("third-party switch");
+        assert!(
+            !auth_path.exists(),
+            "third-party switch must still clear the official OIDC session"
+        );
+        assert!(
+            crate::services::cli_auth_backup::backup_path("grokbuild").is_file(),
+            "the cleared session must land in the backup before deletion"
+        );
+
+        let mut official = Provider::with_id(
+            "grokbuild-official".to_string(),
+            "Grok Official".to_string(),
+            json!({ "config": "" }),
+            None,
+        );
+        official.category = Some("official".to_string());
+        write_grok_provider_live(&official).expect("official switch");
+
+        assert_eq!(
+            fs::read_to_string(&auth_path).expect("restored auth.json"),
+            session,
+            "switching back to the official provider must restore the login"
+        );
+
+        // 本机重新登录过（文件更新）时，恢复不得覆盖新登录态
+        let refreshed = r#"{"oidc":{"key":"fresh-session"}}"#;
+        fs::write(&auth_path, refreshed).expect("re-login");
+        write_grok_provider_live(&third_party).expect("third-party switch again");
+        fs::write(&auth_path, refreshed).expect("re-login during third-party");
+        write_grok_provider_live(&official).expect("official switch again");
+        assert_eq!(
+            fs::read_to_string(&auth_path).expect("auth.json kept"),
+            refreshed
         );
 
         match original_test_home {

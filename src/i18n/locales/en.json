@@ -67,7 +67,15 @@
     "guideReExtract": "If you've newly installed plugins or hooks, re-extract the common config so they sync to other providers.",
     "guideReassurance": "Don't worry — your original configuration is safely stored in the default provider and won't be lost.",
     "emptyTitle": "No common config snippet yet",
-    "emptyHint": "Click \"Extract from Editor\" below to extract reusable parts from your current configuration"
+    "emptyHint": "Click \"Extract from Editor\" below to extract reusable parts from your current configuration",
+    "fieldName": {
+      "config": "Configuration",
+      "snippet": "Common config snippet",
+      "extracted": "Extracted configuration"
+    },
+    "mustBeObject": "{{field}} must be a JSON object",
+    "invalidJson": "{{field}} has invalid JSON, please check the syntax",
+    "parseFailed": "Failed to parse the config JSON; the common config snippet cannot be applied"
   },
   "claudeConfig": {
     "configLabel": "Claude Code settings.json (JSON) *",
@@ -126,7 +134,7 @@
     "importCurrentDescription": "Import current live config as default provider",
     "currentlyUsing": "Currently Using",
     "enable": "Enable",
-    "setAsDefault": "Set as Default",
+    "setAsDefault": "Set Default",
     "inUse": "In Use",
     "needsRouting": "Needs Routing",
     "noRoutingSupport": "No Routing Support",
@@ -142,7 +150,6 @@
     "addOpenCodeProvider": "Add OpenCode Provider",
     "addToConfig": "Add",
     "removeFromConfig": "Remove",
-    "setAsDefault": "Set Default",
     "isDefault": "Current Default",
     "inConfig": "Added",
     "addProviderHint": "Fill in the information to quickly switch providers in the list.",
@@ -199,7 +206,8 @@
         "defaultModelHint": "Writes the model field of the agy config (applied when this provider is switched to); use the button to fetch candidates from the agy catalog. Leave empty to keep the model currently selected in agy.",
         "extraEnvLabel": "Extra environment variables (optional)",
         "extraEnvHint": "One KEY=VALUE per line, written to persistent env on switch; empty value removes the variable.",
-        "extraEnvInvalid": "Invalid extra env format: one KEY=VALUE per line; keys may contain letters, digits and underscores only"
+        "extraEnvInvalid": "Invalid extra env format: one KEY=VALUE per line; keys may contain letters, digits and underscores only",
+        "modelListEmpty": "Could not fetch the model catalog from agy (check that agy is installed and its credentials are set up)"
       },
       "gemini": {
         "model": "Model",
@@ -208,7 +216,10 @@
         "apiKeyPlaceholder": "Enter Gemini API Key"
       }
     },
-    "duplicateLiveIdsLoadFailed": "Failed to read provider identifiers from config, please fix the config and try again"
+    "duplicateLiveIdsLoadFailed": "Failed to read provider identifiers from config, please fix the config and try again",
+    "duplicateParseFailed": "Failed to duplicate: could not parse the provider's configuration",
+    "duplicatedToLibrary": "Copied to the provider library (not added yet). Click \"Add\" to activate",
+    "duplicateFailed": "Failed to duplicate provider"
   },
   "claudeCode": {
     "needsRouting": "Needs Routing",
@@ -477,6 +488,11 @@
           "debug": "Detailed info including SSE stream and request/response",
           "trace": "All logs, most verbose"
         }
+      },
+      "envBackup": {
+        "title": "Environment Variable Backups",
+        "description": "Backups created when conflicting environment variables are deleted — compare and restore them",
+        "open": "View & Restore"
       }
     },
     "language": "Language",
@@ -924,7 +940,8 @@
       "defaultCostMultiplierRequired": "Default multiplier is required",
       "defaultCostMultiplierInvalid": "Invalid multiplier format"
     },
-    "saveFailedGeneric": "Save failed, please try again"
+    "saveFailedGeneric": "Save failed, please try again",
+    "oneClickInstall": "One-click install"
   },
   "apps": {
     "claude": "Claude",
@@ -940,6 +957,115 @@
     "openclaw": "OpenClaw",
     "hermes": "Hermes",
     "pi": "Pi"
+  },
+  "omp": {
+    "groupOAuth": "OAuth login (omp built-in)",
+    "groupApiKey": "API Key (omp built-in)",
+    "groupCommon": "Common providers",
+    "roleManager": {
+      "title": "Role Manager",
+      "ompBuiltinProvider": "OMP built-in",
+      "roleNameRequired": "Please enter a role name",
+      "roleNameNoWhitespace": "Role name cannot contain spaces",
+      "roleNameDuplicate": "This role already exists",
+      "saveError": "Failed to save role",
+      "deleteError": "Failed to delete role",
+      "groupChat": "Chat roles",
+      "groupChatHint": "Routed to chat models by default",
+      "groupKind": "Kind roles",
+      "groupKindHint": "Image generation / web search / speech synthesis / speech recognition / judge",
+      "groupCustom": "Custom roles",
+      "groupCustomHint": "Custom modelRoles keys in config.yml",
+      "description": "Assign models to {{count}} roles (built-in + custom)",
+      "configured": "Configured",
+      "addCustomRole": "Add custom role",
+      "role": "Role",
+      "assignment": "Assignment",
+      "actions": "Actions",
+      "notAssigned": "Unassigned",
+      "saveSuccess": "Role {{role}} saved",
+      "deleteSuccess": "Role {{role}} deleted",
+      "editRole": "Configure {{role}} role",
+      "roleName": "Role name",
+      "roleNamePlaceholder": "e.g. reviewer, writer",
+      "roleNameHint": "Saved to modelRoles in config.yml; models can be assigned just like built-in roles",
+      "provider": "Provider",
+      "selectProvider": "Select provider",
+      "model": "Model",
+      "selectModel": "Select model",
+      "manualModelPlaceholder": "Enter a model ID manually, e.g. gpt-5.2",
+      "loadingModels": "Fetching models from OMP…",
+      "kindFilteredHint": "This role only accepts models with kind = {{kinds}} in the OMP catalog. {{count}} custom models of this provider are hidden (models.yml entries are all \"chat\" to OMP and would be rejected)",
+      "manualModelHint": "This provider has no models available for this role; enter a model ID directly (the role will be saved as provider/model)",
+      "thinkingLevel": "Thinking Level",
+      "thinkingLevelHelp": "Thinking depth for extended-thinking models",
+      "preview": "Preview",
+      "roleDesc": {
+        "default": "General-purpose model for most tasks",
+        "smol": "Fast, cheap model for simple tasks",
+        "slow": "High-quality reasoning model for complex tasks",
+        "vision": "Image understanding and vision tasks",
+        "plan": "Dedicated to planning and architecture design",
+        "commit": "Git commit message generation",
+        "tiny": "Ultra-lightweight tasks (tiny or chat models)",
+        "memory": "Background memory tasks such as memory and history compression",
+        "task": "Subtask execution",
+        "advisor": "Consultation and advice",
+        "image": "Image generation (kind: image)",
+        "web": "Web search backend (kind: search)",
+        "speech": "Speech synthesis TTS (kind: tts)",
+        "dictation": "Speech recognition STT (kind: stt)",
+        "judge": "Review / judging (kind: judge)"
+      }
+    },
+    "addModel": "Add model",
+    "apiKey": "API Key",
+    "apiKeyHelp": "Supports plain text, environment variables ($VAR), or secret-bridge commands",
+    "apiProtocol": "API protocol",
+    "baseUrl": "Base URL",
+    "baseUrlHelp": "Base URL of the API service",
+    "contextWindow": "Context window",
+    "customHeaders": "Custom headers (optional)",
+    "customHeadersHelp": "Extra HTTP headers in JSON format",
+    "displayName": "Display name (optional)",
+    "fetchNeedCreds": "Fill in the Base URL and API Key first",
+    "fetchedFromOmp": "Fetched {{count}} models from the OMP catalog",
+    "fetchedCount": "Fetched {{count}} models",
+    "importAll": "Import all",
+    "importedModels": "Imported {{count}} models",
+    "maxTokens": "Max output",
+    "models": "Model list",
+    "modelsHint": "When empty, OMP discovers models from upstream automatically",
+    "noModels": "No models yet",
+    "noNewModels": "No new models to import",
+    "reasoning": "Supports reasoning",
+    "protocolInherit": "Inherit from provider",
+    "sendAuthHeader": "Send Authorization header",
+    "oauth": {
+      "accounts": "account(s)",
+      "cliMissing": "Oh My Pi CLI not found. Install omp first (irm https://omp.sh/install.ps1 | iex), otherwise sign-in is unavailable.",
+      "howItWorks": "How it works",
+      "loggedIn": "Signed in",
+      "notLoggedIn": "Not signed in",
+      "login": "Log in",
+      "logout": "Log out",
+      "logoutDone": "Signed out",
+      "loginSuccess": "Signed in successfully",
+      "loginFailed": "Failed to start the OMP sign-in flow",
+      "loginTimeout": "Timed out waiting for sign-in to complete. Please try again",
+      "needProviderId": "Fill in the OAuth Provider ID first",
+      "providerId": "OAuth Provider ID",
+      "providerIdFixed": "This ID is fixed by the omp credential-store catalog (e.g. anthropic / openai-codex / xai-oauth) and is determined automatically by the selected preset",
+      "step1": "Click \"Log in\" → a terminal opens running omp's native OAuth flow",
+      "step2": "Complete authorization in the terminal/browser (browser, device code, or paste the callback)",
+      "step3": "Credentials are stored in omp's own credential store; the omp CLI works immediately",
+      "step4": "This app polls automatically and fills in the sign-in status and account list",
+      "terminalOpened": "Terminal opened. Complete the sign-in in the OMP window",
+      "waiting": "Waiting for authorization…",
+      "waitingInTerminal": "Terminal opened. Complete the authorization in the OMP window…",
+      "modelsAutoDiscover": "No model list needed: after signing in, OMP discovers the provider's models automatically — pick them directly in Role Manager."
+    },
+    "providerConfigMissing": "Failed to parse the provider configuration; cannot add it to the config"
   },
   "pi": {
     "empty": {
@@ -1096,7 +1222,27 @@
     "defaultModelHint": "The model Grok Build requests by default; change it anytime without waiting for a preset update.",
     "advancedSectionHint": "Includes upstream format, reasoning overrides and custom User-Agent. Providers using the Chat Completions or Anthropic Messages protocol require routing takeover to be enabled.",
     "reasoningEffortHint": "Enable when the upstream supports thinking-depth control such as low/high/max. Enabling this also turns on thinking mode and converts the request's reasoning effort into the upstream Chat parameter.",
-    "maxOutputTokensHint": "The default 8192 ceiling can truncate long or thinking-heavy responses (stop_reason=max_tokens). This value overrides the request's max_tokens on the Anthropic path. Do not exceed the real output ceiling of the model/gateway or it may 400. Leave empty to use the default 8192."
+    "maxOutputTokensHint": "The default 8192 ceiling can truncate long or thinking-heavy responses (stop_reason=max_tokens). This value overrides the request's max_tokens on the Anthropic path. Do not exceed the real output ceiling of the model/gateway or it may 400. Leave empty to use the default 8192.",
+    "models": {
+      "title": "Model configuration",
+      "add": "Add model",
+      "empty": "No models yet",
+      "setDefault": "Set as default",
+      "isDefault": "Default model",
+      "setDefaultHint": "Set as default",
+      "id": "Model ID",
+      "displayName": "Display name",
+      "contextWindow": "Context window"
+    },
+    "validation": {
+      "baseUrlRequired": "Base URL is required",
+      "apiKeyRequired": "API Key is required",
+      "atLeastOneEntry": "At least one model entry is required",
+      "modelIdRequired": "Model ID is required",
+      "modelIdDuplicate": "Duplicate model ID: {{id}}",
+      "contextWindowPositive": "Context window of model {{id}} must be a positive integer",
+      "defaultKeyNotInEntries": "Default model {{key}} is not in the entry list"
+    }
   },
   "sessionManager": {
     "title": "Session Manager",
@@ -1379,7 +1525,19 @@
     "fetchModelsNotSupported": "This provider does not support fetching model list",
     "fetchModelsEndpointNotFound": "No reachable models endpoint found. Please check the Base URL or confirm whether the provider exposes this API.",
     "fetchModelsTimeout": "Request timed out, please check network connection",
-    "requiredFields": "Please fill in provider name, API endpoint, API Key and model"
+    "requiredFields": "Please fill in provider name, API endpoint, API Key and model",
+    "nameRequired": "Please enter the provider name",
+    "fetchModelsNeedCreds": "Fill in the Base URL and API Key first",
+    "validationError": "Invalid configuration",
+    "saveError": "Save failed, please check the configuration",
+    "jsonError": {
+      "invalid": "Invalid config JSON",
+      "atPosition": "Invalid JSON: {{message}} (at position {{position}})",
+      "atLineColumn": "Invalid JSON: line {{line}}, column {{column}}",
+      "generic": "Invalid JSON: {{message}}"
+    },
+    "urlInvalid": "Please enter a valid URL",
+    "configRequired": "Please fill in the configuration content"
   },
   "copilot": {
     "authSection": "GitHub Copilot Authentication",
@@ -1601,7 +1759,8 @@
     "reasoningGroupTitle": "Reasoning Capability",
     "reasoningSectionHint": "Preset providers are configured automatically; custom providers are inferred from name/URL. Override manually only when auto-detection is wrong.",
     "advancedSectionHint": "Includes upstream format, model mapping, reasoning overrides and custom User-Agent. Providers using the Chat Completions protocol require routing takeover to be enabled.",
-    "noCommonConfigToApply": "The common config snippet is empty or contains nothing to write"
+    "noCommonConfigToApply": "The common config snippet is empty or contains nothing to write",
+    "tomlInvalid": "Invalid TOML"
   },
   "geminiConfig": {
     "envFile": "Environment Variables (.env)",
@@ -1899,7 +2058,8 @@
       "syncNow": "Sync now"
     },
     "cacheReadCostPerMillion": "Cache Read Cost (per million tokens, USD)",
-    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)"
+    "cacheCreationCostPerMillion": "Cache Write Cost (per million tokens, USD)",
+    "refreshing": "Refreshing…"
   },
   "usageScript": {
     "title": "Configure Usage Query",
@@ -1918,6 +2078,7 @@
     "copilotAutoAuth": "Auto OAuth authentication, no manual credentials needed",
     "tokenPlanHint": "Automatically uses the provider's API Key and Base URL to query Token Plan quota",
     "balanceHint": "Automatically uses the provider's API Key to query account balance",
+    "balanceUnknownHint": "This host is not in the built-in balance provider list (DeepSeek, StepFun, SiliconFlow, OpenRouter, NovitaAI only). The query will fail after saving; switch to the general template and customize the script instead.",
     "officialSubscriptionHint": "Reads the local CLI OAuth credentials and calls the official API to query subscription quota. Disabled by default and only requests after you enable it.",
     "resetDate": "Reset date",
     "premiumRequests": "Premium Requests",
@@ -2179,6 +2340,14 @@
         "name": "@upstash/context7-mcp",
         "description": "Context7 documentation search tool providing latest library docs and code examples, with higher limits when configured with a key"
       }
+    },
+    "tomlError": {
+      "empty": "TOML content cannot be empty",
+      "unrecognized": "Unrecognized TOML format. Provide a single MCP server config, or use the [mcp_servers.<id>] format",
+      "configNotObject": "The server configuration must be an object",
+      "stdioRequiresCommand": "MCP servers of type \"stdio\" must include a command field",
+      "httpRequiresUrl": "MCP servers of type \"{{type}}\" must include a url field",
+      "unsupportedType": "Unsupported MCP server type: {{type}}"
     }
   },
   "prompts": {
@@ -3127,6 +3296,8 @@
     "geminiPro": "Pro",
     "geminiFlash": "Flash",
     "geminiFlashLite": "Flash Lite",
+    "geminiFamily": "Gemini models",
+    "claudeGptFamily": "Claude / GPT models",
     "weeklyLimit": "Weekly",
     "monthly": "Monthly",
     "credits": "Credits",
@@ -3137,6 +3308,18 @@
     "expired": "Session expired",
     "expiredHint": "Run the {{tool}} command to refresh your login",
     "queryFailed": "Query failed",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "credentialMissing": "No local credentials found",
+    "credentialMissingHint": "Sign in with {{tool}} first",
+    "credentialParseError": "Stored credentials could not be parsed",
+    "noTiers": "Credentials are ready, but the upstream returned no quota windows",
+    "used": "Used",
+    "remaining": "Remaining",
+    "upperLimit": "Limit",
+    "currentPlan": "Plan",
+    "noWindowData": "No usage windows reported for this plan"
+  },
+  "update": {
+    "checkFailed": "Update check failed"
   }
 }

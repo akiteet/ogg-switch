@@ -67,7 +67,15 @@
     "guideReExtract": "如果您新安裝了外掛程式或 Hook，請重新擷取一次通用設定，以便同步至其他供應商。",
     "guideReassurance": "請放心：您的原始設定已儲存在預設供應商中，不會遺失。",
     "emptyTitle": "尚未建立通用設定片段",
-    "emptyHint": "點擊下方「從編輯內容擷取」按鈕，從目前設定中擷取可重複使用的部分"
+    "emptyHint": "點擊下方「從編輯內容擷取」按鈕，從目前設定中擷取可重複使用的部分",
+    "fieldName": {
+      "config": "設定",
+      "snippet": "通用設定片段",
+      "extracted": "擷取的設定"
+    },
+    "mustBeObject": "{{field}}必須是 JSON 物件",
+    "invalidJson": "{{field}} JSON 格式錯誤，請檢查語法",
+    "parseFailed": "設定 JSON 解析失敗，無法套用通用設定"
   },
   "claudeConfig": {
     "configLabel": "Claude Code 設定 (JSON) *",
@@ -142,7 +150,6 @@
     "addOpenCodeProvider": "新增 OpenCode 供應商",
     "addToConfig": "新增",
     "removeFromConfig": "移除",
-    "setAsDefault": "設為預設",
     "isDefault": "目前預設",
     "inConfig": "已新增",
     "addProviderHint": "填寫資訊後即可在清單中快速切換供應商。",
@@ -199,7 +206,8 @@
         "defaultModelHint": "寫入 agy 設定的 model 欄位（切換至此供應商時生效）；點右側按鈕從 agy 目錄取得候選。留空則不動 agy 裡已選的模型。",
         "extraEnvLabel": "額外環境變數（選填）",
         "extraEnvHint": "每行一條 KEY=VALUE，隨切換寫入持久環境變數；清空該變數值即刪除。",
-        "extraEnvInvalid": "額外環境變數格式錯誤：每行一條 KEY=VALUE，變數名只能含字母/數字/底線"
+        "extraEnvInvalid": "額外環境變數格式錯誤：每行一條 KEY=VALUE，變數名只能含字母/數字/底線",
+        "modelListEmpty": "無法從 agy 取得模型目錄（請確認 agy 已安裝並設定好憑證）"
       },
       "gemini": {
         "model": "模型",
@@ -208,7 +216,10 @@
         "apiKeyPlaceholder": "請輸入 Gemini API Key"
       }
     },
-    "duplicateLiveIdsLoadFailed": "讀取設定中的供應商識別碼失敗，請先修復設定後再試"
+    "duplicateLiveIdsLoadFailed": "讀取設定中的供應商識別碼失敗，請先修復設定後再試",
+    "duplicateParseFailed": "複製失敗：無法解析該供應商的設定",
+    "duplicatedToLibrary": "已複製到供應商庫（未新增），點擊「新增」後生效",
+    "duplicateFailed": "複製供應商失敗"
   },
   "claudeCode": {
     "needsRouting": "需要路由",
@@ -477,6 +488,11 @@
           "debug": "詳細資訊，包含 SSE 串流與請求/回應詳情",
           "trace": "全部日誌，最詳細"
         }
+      },
+      "envBackup": {
+        "title": "環境變數備份",
+        "description": "刪除衝突環境變數時自動產生的備份，可比對後還原",
+        "open": "查看與還原"
       }
     },
     "language": "介面語言",
@@ -942,6 +958,115 @@
     "hermes": "Hermes",
     "pi": "Pi"
   },
+  "omp": {
+    "groupOAuth": "OAuth 登入（omp 內建）",
+    "groupApiKey": "API Key（omp 內建）",
+    "groupCommon": "常見供應商",
+    "roleManager": {
+      "title": "角色管理",
+      "ompBuiltinProvider": "OMP 內建",
+      "roleNameRequired": "請輸入角色名稱",
+      "roleNameNoWhitespace": "角色名稱不能包含空格",
+      "roleNameDuplicate": "該角色已存在",
+      "saveError": "儲存角色失敗",
+      "deleteError": "刪除角色失敗",
+      "groupChat": "對話角色",
+      "groupChatHint": "預設路由到對話模型",
+      "groupKind": "種類角色（kind）",
+      "groupKindHint": "圖像生成 / 聯網搜尋 / 語音合成 / 語音識別 / 評審",
+      "groupCustom": "自訂角色",
+      "groupCustomHint": "config.yml 裡的自訂 modelRoles 鍵",
+      "description": "為 {{count}} 個角色分配模型（內建角色 + 自訂角色）",
+      "configured": "已設定",
+      "addCustomRole": "新增自訂角色",
+      "role": "角色",
+      "assignment": "分配",
+      "actions": "操作",
+      "notAssigned": "未分配",
+      "saveSuccess": "角色 {{role}} 儲存成功",
+      "deleteSuccess": "角色 {{role}} 已刪除",
+      "editRole": "設定 {{role}} 角色",
+      "roleName": "角色名稱",
+      "roleNamePlaceholder": "例如 reviewer、writer",
+      "roleNameHint": "儲存後寫入 config.yml 的 modelRoles，可與內建角色一樣分配模型",
+      "provider": "Provider",
+      "selectProvider": "選擇 Provider",
+      "model": "Model",
+      "selectModel": "選擇 Model",
+      "manualModelPlaceholder": "手動輸入模型 ID，例如 gpt-5.2",
+      "loadingModels": "正在從 OMP 取得模型…",
+      "kindFilteredHint": "該角色只接受 OMP 目錄裡 kind = {{kinds}} 的模型，已隱藏該供應商的 {{count}} 個自建模型（models.yml 條目在 OMP 眼裡都是 chat，分配過去不會被採納）",
+      "manualModelHint": "該供應商沒有該角色可用的模型，直接輸入模型 ID 即可（角色將儲存為 provider/model）",
+      "thinkingLevel": "Thinking Level",
+      "thinkingLevelHelp": "Extended thinking 模型的思考深度",
+      "preview": "預覽",
+      "roleDesc": {
+        "default": "通用模型，適合大多數任務",
+        "smol": "快速便宜的模型，適合簡單任務",
+        "slow": "高質量推理模型，適合複雜任務",
+        "vision": "圖像理解和視覺任務",
+        "plan": "規劃和架構設計專用",
+        "commit": "Git 提交訊息產生",
+        "tiny": "極輕量任務（可用 tiny 或 chat 模型）",
+        "memory": "記憶與歷史壓縮等後台記憶任務",
+        "task": "子任務執行",
+        "advisor": "諮詢和建議",
+        "image": "圖像產生（kind: image）",
+        "web": "聯網搜尋後端（kind: search）",
+        "speech": "語音合成 TTS（kind: tts）",
+        "dictation": "語音識別 STT（kind: stt）",
+        "judge": "評審/判定（kind: judge）"
+      }
+    },
+    "addModel": "新增模型",
+    "apiKey": "API Key",
+    "apiKeyHelp": "支援明文、環境變數 ($VAR) 或 secret-bridge 命令",
+    "apiProtocol": "API 協議",
+    "baseUrl": "Base URL",
+    "baseUrlHelp": "API 服務的基礎 URL",
+    "contextWindow": "上下文視窗",
+    "customHeaders": "自訂 Headers（可選）",
+    "customHeadersHelp": "JSON 格式的額外 HTTP headers",
+    "displayName": "顯示名（可選）",
+    "fetchNeedCreds": "請先填寫 Base URL 和 API Key",
+    "fetchedFromOmp": "從 OMP 模型目錄取得 {{count}} 個模型",
+    "fetchedCount": "已取得 {{count}} 個模型",
+    "importAll": "全部匯入",
+    "importedModels": "已匯入 {{count}} 個模型",
+    "maxTokens": "最大輸出",
+    "models": "模型列表",
+    "modelsHint": "為空時由 OMP 從上游自動發現",
+    "noModels": "還沒有模型",
+    "noNewModels": "沒有可匯入的新模型",
+    "reasoning": "支援推理 (reasoning)",
+    "protocolInherit": "繼承供應商",
+    "sendAuthHeader": "發送 Authorization header",
+    "oauth": {
+      "accounts": "個帳號",
+      "cliMissing": "未偵測到 Oh My Pi CLI。請先安裝 omp（irm https://omp.sh/install.ps1 | iex），否則無法登入。",
+      "howItWorks": "運作原理",
+      "loggedIn": "已登入",
+      "notLoggedIn": "未登入",
+      "login": "登入",
+      "logout": "登出",
+      "logoutDone": "已登出",
+      "loginSuccess": "登入成功",
+      "loginFailed": "無法啟動 OMP 登入流程",
+      "loginTimeout": "等待逾時：未偵測到登入完成，請重試",
+      "needProviderId": "請先填寫 OAuth Provider ID",
+      "providerId": "OAuth Provider ID",
+      "providerIdFixed": "此 ID 由 omp 憑證庫目錄固定（如 anthropic / openai-codex / xai-oauth），已按所選預設自動確定，無需選擇",
+      "step1": "點擊「登入」→ 開啟終端執行 omp 原生 OAuth 流程",
+      "step2": "在終端/瀏覽器完成授權（瀏覽器、裝置碼或貼上回呼）",
+      "step3": "憑證存入 OMP 自己的憑證庫，omp CLI 立即可用",
+      "step4": "本應用自動輪詢並回填登入狀態與帳號列表",
+      "terminalOpened": "已開啟終端，請在 OMP 視窗中完成登入",
+      "waiting": "等待授權中…",
+      "waitingInTerminal": "已開啟終端，請在 OMP 視窗中完成授權…",
+      "modelsAutoDiscover": "無需設定模型列表：登入後 OMP 會自動發現該供應商的模型，直接在「角色設定」中選用即可。"
+    },
+    "providerConfigMissing": "供應商設定解析失敗，無法加入到設定"
+  },
   "pi": {
     "empty": {
       "title": "尚未新增 API Key 供應商",
@@ -1097,7 +1222,27 @@
     "defaultModelHint": "Grok Build 預設請求的模型，隨時可改，無需等待軟體更新供應商範本。",
     "advancedSectionHint": "包含上游格式、思考能力與自訂 User-Agent。使用 Chat Completions / Anthropic Messages 協定的供應商需開啟路由接管才能使用。",
     "reasoningEffortHint": "上游支援 low/high/max 等思考深度控制時啟用。啟用後會自動啟用思考模式，並把請求中的 reasoning effort 轉成上游 Chat 參數。",
-    "maxOutputTokensHint": "預設上限 8192 容易在長回答或深度思考時被截斷（stop_reason=max_tokens）。此處設定會作為 Anthropic 的 max_tokens 覆蓋請求值。請勿超過該模型／閘道的真實輸出上限，否則可能 400。留空使用預設 8192。"
+    "maxOutputTokensHint": "預設上限 8192 容易在長回答或深度思考時被截斷（stop_reason=max_tokens）。此處設定會作為 Anthropic 的 max_tokens 覆蓋請求值。請勿超過該模型／閘道的真實輸出上限，否則可能 400。留空使用預設 8192。",
+    "models": {
+      "title": "模型設定",
+      "add": "新增模型",
+      "empty": "還沒有模型",
+      "setDefault": "設為預設",
+      "isDefault": "預設模型",
+      "setDefaultHint": "設為預設",
+      "id": "模型 ID",
+      "displayName": "顯示名",
+      "contextWindow": "上下文視窗"
+    },
+    "validation": {
+      "baseUrlRequired": "Base URL 不能為空",
+      "apiKeyRequired": "API Key 不能為空",
+      "atLeastOneEntry": "至少需要一個模型條目",
+      "modelIdRequired": "模型 ID 不能為空",
+      "modelIdDuplicate": "模型 ID 重複: {{id}}",
+      "contextWindowPositive": "模型 {{id}} 的上下文視窗必須是正整數",
+      "defaultKeyNotInEntries": "預設模型 {{key}} 不在條目列表裡"
+    }
   },
   "sessionManager": {
     "title": "工作階段管理",
@@ -1380,7 +1525,19 @@
     "fetchModelsNotSupported": "該供應商不支援取得模型清單",
     "fetchModelsEndpointNotFound": "未找到可用的模型清單端點，請檢查 Base URL 或確認供應商是否開放該 API",
     "fetchModelsTimeout": "請求逾時，請檢查網路連線",
-    "requiredFields": "請填寫供應商名稱、API 位址、API Key 和模型"
+    "requiredFields": "請填寫供應商名稱、API 位址、API Key 和模型",
+    "nameRequired": "請填寫供應商名稱",
+    "fetchModelsNeedCreds": "請先填寫 Base URL 和 API Key",
+    "validationError": "設定驗證失敗",
+    "saveError": "儲存失敗，請檢查設定",
+    "jsonError": {
+      "invalid": "設定 JSON 格式錯誤",
+      "atPosition": "JSON 格式錯誤：{{message}}（位置：{{position}}）",
+      "atLineColumn": "JSON 格式錯誤：第 {{line}} 行，第 {{column}} 列",
+      "generic": "JSON 格式錯誤：{{message}}"
+    },
+    "urlInvalid": "請輸入有效的網址",
+    "configRequired": "請填寫設定內容"
   },
   "copilot": {
     "authSection": "GitHub Copilot 驗證",
@@ -1602,7 +1759,8 @@
     "reasoningGroupTitle": "思考能力",
     "reasoningSectionHint": "預設供應商已自動設定；自訂供應商會按名稱/位址自動推斷。僅當自動識別不準時才需手動覆寫。",
     "advancedSectionHint": "包含上游格式、模型映射、思考能力與自訂 User-Agent。使用 Chat Completions 協定的供應商需開啟路由接管才能使用。",
-    "noCommonConfigToApply": "通用設定片段為空或沒有可寫入的內容"
+    "noCommonConfigToApply": "通用設定片段為空或沒有可寫入的內容",
+    "tomlInvalid": "TOML 格式錯誤"
   },
   "geminiConfig": {
     "envFile": "環境變數 (.env)",
@@ -1900,7 +2058,8 @@
       "syncNow": "立即同步"
     },
     "cacheReadCostPerMillion": "快取讀取成本 (每百萬 tokens, USD)",
-    "cacheCreationCostPerMillion": "快取寫入成本 (每百萬 tokens, USD)"
+    "cacheCreationCostPerMillion": "快取寫入成本 (每百萬 tokens, USD)",
+    "refreshing": "刷新中…"
   },
   "usageScript": {
     "title": "設定用量查詢",
@@ -1919,6 +2078,7 @@
     "copilotAutoAuth": "自動使用 OAuth 驗證，無需手動設定憑證",
     "tokenPlanHint": "自動使用供應商的 API Key 和 Base URL 查詢 Token Plan 額度",
     "balanceHint": "自動使用供應商的 API Key 查詢帳號餘額",
+    "balanceUnknownHint": "該網域不在內建餘額供應商清單中（目前支援 DeepSeek、StepFun、SiliconFlow、OpenRouter、NovitaAI），儲存後查詢會失敗；請改用「通用範本」自訂查詢腳本。",
     "officialSubscriptionHint": "讀取本機 CLI 的 OAuth 憑證，並呼叫官方介面查詢訂閱額度。預設關閉，只有啟用後才會請求。",
     "resetDate": "重設日期",
     "premiumRequests": "Premium 請求",
@@ -2180,6 +2340,14 @@
         "name": "@upstash/context7-mcp",
         "description": "Context7 文件搜尋工具，提供最新的函式庫文件和程式碼範例，設定 key 會有更高限額"
       }
+    },
+    "tomlError": {
+      "empty": "TOML 內容不能為空",
+      "unrecognized": "無法識別的 TOML 格式。請提供單個 MCP 伺服器設定，或使用 [mcp_servers.<id>] 格式",
+      "configNotObject": "伺服器設定必須是物件",
+      "stdioRequiresCommand": "stdio 類型的 MCP 伺服器必須包含 command 欄位",
+      "httpRequiresUrl": "{{type}} 類型的 MCP 伺服器必須包含 url 欄位",
+      "unsupportedType": "不支援的 MCP 伺服器類型: {{type}}"
     }
   },
   "prompts": {
@@ -3128,6 +3296,8 @@
     "geminiPro": "Pro",
     "geminiFlash": "Flash",
     "geminiFlashLite": "Flash Lite",
+    "geminiFamily": "Gemini 系列",
+    "claudeGptFamily": "Claude / GPT 系列",
     "weeklyLimit": "每週",
     "monthly": "每月",
     "credits": "額度",
@@ -3138,6 +3308,18 @@
     "expired": "工作階段已過期",
     "expiredHint": "請執行 {{tool}} 命令重新整理登入",
     "queryFailed": "查詢失敗",
-    "refresh": "重新整理"
+    "refresh": "重新整理",
+    "credentialMissing": "找不到本機憑證",
+    "credentialMissingHint": "請先執行 {{tool}} 完成登入",
+    "credentialParseError": "本機憑證無法解析",
+    "noTiers": "憑證已就緒，但上游未回傳額度視窗",
+    "used": "已用",
+    "remaining": "剩餘",
+    "upperLimit": "上限",
+    "currentPlan": "方案",
+    "noWindowData": "此方案未提供用量視窗"
+  },
+  "update": {
+    "checkFailed": "檢查更新失敗"
   }
 }

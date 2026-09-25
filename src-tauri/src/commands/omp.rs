@@ -1035,7 +1035,9 @@ fn synthesize_oauth_providers(providers: &mut Vec<OmpProviderConfig>, meta: &Omp
             raw: None,
             sort_index: m.sort_index,
             in_config: true,
-            usage_script: None,
+            // meta store 里保存的用量脚本要一并带出：OAuth 条目同样可以配置
+            // 用量查询（曾硬编码 None，导致 OAuth 卡片永远挂不上脚本）。
+            usage_script: m.usage_script.clone(),
         });
     }
 }
@@ -1801,7 +1803,7 @@ fn count_by_provider(models: &[JsonValue]) -> Vec<OmpEnabledProvider> {
 
 /// 解析密钥形态：`!cmd` / `$(cmd)` → 执行命令取 stdout（secret-bridge）；
 /// `${VAR}` / `$VAR` → 读环境变量；其余原样返回（明文密钥）。
-fn resolve_secret_form(raw: &str) -> String {
+pub(crate) fn resolve_secret_form(raw: &str) -> String {
     let trimmed = raw.trim();
     if let Some(cmd) = trimmed
         .strip_prefix('!')

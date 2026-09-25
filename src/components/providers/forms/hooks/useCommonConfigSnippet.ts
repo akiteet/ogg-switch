@@ -258,7 +258,7 @@ export function useCommonConfigSnippet({
       }
 
       // 验证JSON格式
-      const validationError = validateJsonConfig(value, "通用配置片段");
+      const validationError = validateJsonConfig(value, t("commonConfig.fieldName.snippet"));
       if (validationError) {
         setCommonConfigError(validationError);
       } else {
@@ -337,7 +337,7 @@ export function useCommonConfigSnippet({
       }
 
       // 验证 JSON 格式
-      const validationError = validateJsonConfig(extracted, "提取的配置");
+      const validationError = validateJsonConfig(extracted, t("commonConfig.fieldName.extracted"));
       if (validationError) {
         setCommonConfigError(validationError);
         return;

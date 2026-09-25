@@ -350,6 +350,172 @@ pub struct CredentialSnapshot {
     pub cred_type: u32,
 }
 
+// ============================================================================
+// agy 登录态解析（keyring 优先、token 文件兜底）
+// ============================================================================
+
+/// 一枚可用的 agy access token 及其到期时间。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgyAccessToken {
+    pub token: String,
+    /// `expiry`（RFC3339）解析出的毫秒时间戳；`None` = 无从得知，按"未过期"处理，
+    /// 最终由接口的 401 说了算。
+    pub expires_at_ms: Option<i64>,
+}
+
+impl AgyAccessToken {
+    pub fn is_expired_at(&self, now_ms: i64) -> bool {
+        matches!(self.expires_at_ms, Some(at) if at < now_ms)
+    }
+}
+
+/// agy 登录态的整体结论。
+#[derive(Debug, Clone)]
+pub enum AgyTokenState {
+    /// 有未过期的 token 可用。
+    Usable(AgyAccessToken),
+    /// 只有过期的 token：调用方仍可拿去试一把（CLI 可能刚在别处刷新过）。
+    /// `diagnostic` 带上读取过程中的问题（例如另一处凭据解析失败），避免信息丢失。
+    Expired {
+        token: AgyAccessToken,
+        diagnostic: Option<String>,
+    },
+    /// 一处都没有。`diagnostic` 有值时说明"读到了但解析失败"（凭据损坏），否则是没登录。
+    Missing { diagnostic: Option<String> },
+}
+
+/// 从一处凭据 JSON 里抽出 access token，兼容 agy 的三种落盘形态：
+///
+/// - **keyring 快照（agy 1.2.9 实测真形态）**：`{"token": {"access_token": …}}` ——
+///   `token` 是**嵌套对象**；早期/其它平台可能写成 `{"token": "…"}`（token 直接是字符串）。
+/// - **token 文件**：`{"access_token": "…"}`（顶层字段，无嵌套）。
+///
+/// 解析失败是这类问题的高发点：把 `token` 当字符串读会静默得到 `None`，
+/// 于是"已登录"被误判成"未登录/过期"（v1.1.3 实测踩过）。
+pub fn access_token_from_credential_json(value: &Value) -> Option<AgyAccessToken> {
+    fn expiry_ms(value: &Value) -> Option<i64> {
+        value
+            .get("expiry")
+            .and_then(Value::as_str)
+            .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+            .map(|at| at.timestamp_millis())
+    }
+
+    // 嵌套形态：{"token": {...}}
+    if let Some(nested) = value.get("token") {
+        if let Some(token) = nested
+            .get("access_token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+        {
+            return Some(AgyAccessToken {
+                token: token.to_string(),
+                expires_at_ms: expiry_ms(nested),
+            });
+        }
+    }
+
+    // 旧形态：{"token": "…"}（token 本体是字符串）
+    if let Some(token) = value
+        .get("token")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty())
+    {
+        return Some(AgyAccessToken {
+            token: token.to_string(),
+            expires_at_ms: expiry_ms(value),
+        });
+    }
+
+    // token 文件形态：{"access_token": "…", "expiry": "…"}
+    value
+        .get("access_token")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(|token| AgyAccessToken {
+            token: token.to_string(),
+            expires_at_ms: expiry_ms(value),
+        })
+}
+
+/// 从候选里挑一枚：未过期里取到期最晚的；全过期时取到期最晚的那枚
+/// （交给调用方"再试一把"）；没有任何候选时 `None`。
+pub fn pick_freshest_access_token(
+    candidates: &[AgyAccessToken],
+    now_ms: i64,
+) -> Option<AgyAccessToken> {
+    let usable = candidates
+        .iter()
+        .filter(|candidate| !candidate.is_expired_at(now_ms))
+        .max_by_key(|candidate| candidate.expires_at_ms.unwrap_or(i64::MAX));
+    if let Some(token) = usable {
+        return Some(token.clone());
+    }
+    candidates
+        .iter()
+        .max_by_key(|candidate| candidate.expires_at_ms.unwrap_or(i64::MIN))
+        .cloned()
+}
+
+/// 读取 agy 登录态：**keyring 优先、token 文件兜底**（与 agy 自己的组合存储
+/// `keyringAuth` primary / `fileTokenStorage` fallback 一致；Windows 上实测
+/// keyring 每小时刷新、而 token 文件停在首次登录那天）。
+///
+/// `keyring` 由调用方注入，便于单测不触碰真实系统凭据条目。
+pub fn agy_token_state(
+    keyring: impl Fn() -> Result<Vec<CredentialSnapshot>, AppError>,
+) -> AgyTokenState {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut candidates: Vec<AgyAccessToken> = Vec::new();
+    let mut diagnostics: Vec<String> = Vec::new();
+
+    match keyring() {
+        Ok(snapshots) => {
+            for snapshot in &snapshots {
+                match credential_blob_json(snapshot) {
+                    Ok(value) => match access_token_from_credential_json(&value) {
+                        Some(token) => candidates.push(token),
+                        None => diagnostics.push(format!(
+                            "凭据管理器条目 {} 里没有 access_token",
+                            snapshot.target_name
+                        )),
+                    },
+                    Err(err) => diagnostics.push(err),
+                }
+            }
+        }
+        Err(err) => diagnostics.push(err.to_string()),
+    }
+
+    // token 文件：**不要把 Err 吞掉**——文件损坏必须变成可见的 parse_error，
+    // 而不是伪装成"没登录"（少一个 `.ok()` 就会退化成后者）。
+    match read_token_file() {
+        Ok(Some(value)) => match access_token_from_credential_json(&value) {
+            Some(token) => candidates.push(token),
+            None => diagnostics.push("token 文件里没有 access_token".to_string()),
+        },
+        Ok(None) => {}
+        Err(err) => diagnostics.push(err.to_string()),
+    }
+
+    let diagnostic = diagnostics.into_iter().next();
+    match pick_freshest_access_token(&candidates, now_ms) {
+        Some(token) if !token.is_expired_at(now_ms) => AgyTokenState::Usable(token),
+        Some(token) => AgyTokenState::Expired { token, diagnostic },
+        None => AgyTokenState::Missing { diagnostic },
+    }
+}
+
+/// 把凭据管理器快照的 blob（base64）解回 JSON
+fn credential_blob_json(snapshot: &CredentialSnapshot) -> Result<Value, String> {
+    use base64::Engine as _;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(snapshot.blob.as_bytes())
+        .map_err(|err| format!("凭据快照 base64 解码失败: {err}"))?;
+    serde_json::from_slice(&bytes).map_err(|err| format!("凭据快照不是合法 JSON: {err}"))
+}
+
 #[cfg(windows)]
 pub mod credential_manager {
     use super::CredentialSnapshot;
@@ -649,18 +815,47 @@ pub fn read_token_file() -> Result<Option<Value>, AppError> {
     })
 }
 
-/// 发现本地 agy 登录凭据：优先 token 文件，其次 Windows 凭据管理器。
-/// 返回值直接作为 settings_config 的 auth 载荷：`{"token": …}`（文件快照）
-/// 或 `{"credential": …}`（Windows 凭据快照）。
+/// 发现本地 agy 登录凭据。
+///
+/// **keyring 优先、token 文件兜底**——与 agy 自己的组合存储一致：agy 在 Windows 上把
+/// OAuth 凭据写进系统密钥环并每小时刷新，`antigravity-oauth-token` 只是首次登录时留下的
+/// 静态快照（实测 mtime 停在首次登录那天）。旧实现"文件优先"会让「导入当前账号」
+/// 存下一份注定过期的凭据（用户报障「认证都是假的」的另一半）。
+///
+/// 两边都有时取 access token **到期更晚**的那一份；两者都过期时仍按 keyring 取
+/// （它至少是 agy 自己写的最新形态）。
+///
+/// 返回值直接作为 settings_config 的 auth 载荷：`{"credential": …}`（Windows 凭据快照）
+/// 或 `{"token": …}`（文件快照）。
 pub fn discover_local_auth() -> Result<Option<Value>, AppError> {
-    if let Some(token) = read_token_file()? {
-        return Ok(Some(json!({ "token": token })));
+    let file_token = read_token_file()?;
+    let keyring = credential_manager::find_matching()?;
+    let keyring_snapshot = keyring.first().cloned();
+
+    let file_freshness = file_token
+        .as_ref()
+        .and_then(access_token_from_credential_json)
+        .and_then(|token| token.expires_at_ms);
+    let keyring_freshness = keyring_snapshot
+        .as_ref()
+        .and_then(|snapshot| credential_blob_json(snapshot).ok())
+        .and_then(|value| access_token_from_credential_json(&value))
+        .and_then(|token| token.expires_at_ms);
+
+    match (file_token, keyring_snapshot) {
+        (Some(file), Some(snapshot)) => {
+            // 文件没有 expiry 元数据时视作"不如 keyring 可信"（keyring 是 agy 主动维护的那份）
+            let prefer_file = matches!((file_freshness, keyring_freshness), (Some(file_at), Some(keyring_at)) if file_at > keyring_at);
+            if prefer_file {
+                Ok(Some(json!({ "token": file })))
+            } else {
+                Ok(Some(json!({ "credential": snapshot })))
+            }
+        }
+        (Some(file), None) => Ok(Some(json!({ "token": file }))),
+        (None, Some(snapshot)) => Ok(Some(json!({ "credential": snapshot }))),
+        (None, None) => Ok(None),
     }
-    let candidates = credential_manager::find_matching()?;
-    if let Some(snap) = candidates.first() {
-        return Ok(Some(json!({ "credential": snap })));
-    }
-    Ok(None)
 }
 
 /// 组装 live 快照（与 Provider.settings_config 同形），输入显式注入以便单测
@@ -1433,7 +1628,10 @@ mod tests {
                 value.get("modelProvider").and_then(Value::as_str),
                 Some("gemini")
             );
-            assert_eq!(value.get("colorScheme").and_then(Value::as_str), Some("dark"));
+            assert_eq!(
+                value.get("colorScheme").and_then(Value::as_str),
+                Some("dark")
+            );
 
             update_model(None).unwrap();
             let value: Value =
@@ -1464,10 +1662,7 @@ mod tests {
 
             // legacy env 键被清除
             assert_eq!(mem.get("GEMINI_MODEL"), None);
-            assert_eq!(
-                mem.get("GEMINI_API_KEY").as_deref(),
-                Some("sk-test")
-            );
+            assert_eq!(mem.get("GEMINI_API_KEY").as_deref(), Some("sk-test"));
 
             // settings.json：modelProvider 打开 + model 写入
             let settings: Value = serde_json::from_str(
@@ -1493,11 +1688,7 @@ mod tests {
             // agy 里已有用户自选的模型
             let settings_path = get_antigravity_settings_path();
             std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-            std::fs::write(
-                &settings_path,
-                r#"{"model":"Gemini 3.8 Flash (Low)"}"#,
-            )
-            .unwrap();
+            std::fs::write(&settings_path, r#"{"model":"Gemini 3.8 Flash (Low)"}"#).unwrap();
 
             let mem = MemEnv::new();
             let provider = provider_of(serde_json::json!({
@@ -1529,7 +1720,10 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("GEMINI_API_KEY".to_string(), "sk-test".to_string());
         let snapshot = compose_live_snapshot(&settings, &env, None);
-        assert_eq!(snapshot.get("authType").and_then(Value::as_str), Some("api-key"));
+        assert_eq!(
+            snapshot.get("authType").and_then(Value::as_str),
+            Some("api-key")
+        );
         assert_eq!(
             snapshot.get("model").and_then(Value::as_str),
             Some("Gemini 3.8 Flash (Low)")
@@ -1574,6 +1768,169 @@ mod tests {
                 settings.get("model").and_then(Value::as_str),
                 Some("Gemini 3.8 Flash (Low)")
             );
+        });
+    }
+
+    // ── agy 登录态解析 ────────────────────────────────────────
+
+    #[test]
+    fn access_token_parses_all_three_stored_shapes() {
+        // 1) keyring 快照（agy 1.2.9 实测真形态）：token 是嵌套对象
+        let nested = json!({
+            "token": {
+                "access_token": "at-nested",
+                "token_type": "Bearer",
+                "refresh_token": "rt",
+                "expiry": "2030-01-01T00:00:00+00:00"
+            },
+            "auth_method": "consumer",
+            "id_token": "id"
+        });
+        let parsed = access_token_from_credential_json(&nested).expect("nested shape");
+        assert_eq!(parsed.token, "at-nested");
+        assert!(parsed.expires_at_ms.is_some());
+        assert!(!parsed.is_expired_at(0));
+
+        // 2) 旧形态：token 直接是字符串
+        let legacy = json!({ "token": "at-legacy" });
+        let parsed = access_token_from_credential_json(&legacy).expect("legacy shape");
+        assert_eq!(parsed.token, "at-legacy");
+        assert_eq!(parsed.expires_at_ms, None);
+
+        // 3) token 文件形态：顶层 access_token
+        let file = json!({ "access_token": "at-file", "expiry": "2000-01-01T00:00:00Z" });
+        let parsed = access_token_from_credential_json(&file).expect("file shape");
+        assert_eq!(parsed.token, "at-file");
+        assert!(parsed.is_expired_at(chrono::Utc::now().timestamp_millis()));
+
+        // 读不出来的形态一律 None（交给调用方报 parse_error，而不是假装没登录）
+        assert!(
+            access_token_from_credential_json(&json!({ "token": { "token_type": "Bearer" } }))
+                .is_none()
+        );
+        assert!(access_token_from_credential_json(&json!({ "access_token": "" })).is_none());
+        assert!(access_token_from_credential_json(&json!("just a string")).is_none());
+    }
+
+    #[test]
+    fn pick_freshest_prefers_usable_then_latest_expiry() {
+        let now = 1_000_000_i64;
+        let token = |name: &str, at: Option<i64>| AgyAccessToken {
+            token: name.to_string(),
+            expires_at_ms: at,
+        };
+
+        // 未过期的优先于已过期的（即便已过期的"数字更大"也不该赢）
+        let picked = pick_freshest_access_token(
+            &[token("stale", Some(now - 1)), token("fresh", Some(now + 5))],
+            now,
+        )
+        .unwrap();
+        assert_eq!(picked.token, "fresh");
+
+        // 多个未过期 → 取到期最晚的
+        let picked = pick_freshest_access_token(
+            &[
+                token("sooner", Some(now + 5)),
+                token("later", Some(now + 50)),
+            ],
+            now,
+        )
+        .unwrap();
+        assert_eq!(picked.token, "later");
+
+        // 无 expiry 元数据的按"未过期"处理（由接口 401 说了算）
+        let picked = pick_freshest_access_token(
+            &[token("unknown", None), token("stale", Some(now - 1))],
+            now,
+        )
+        .unwrap();
+        assert_eq!(picked.token, "unknown");
+
+        // 全都过期 → 取到期最晚的那枚交给调用方"再试一把"
+        let picked = pick_freshest_access_token(
+            &[
+                token("old", Some(now - 100)),
+                token("newer", Some(now - 10)),
+            ],
+            now,
+        )
+        .unwrap();
+        assert_eq!(picked.token, "newer");
+
+        assert!(pick_freshest_access_token(&[], now).is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn token_state_prefers_keyring_over_stale_file_and_reports_freshness() {
+        use base64::Engine as _;
+
+        let snapshot = |blob: Value| CredentialSnapshot {
+            target_name: "gemini:antigravity".to_string(),
+            user_name: "antigravity".to_string(),
+            blob: base64::engine::general_purpose::STANDARD.encode(blob.to_string()),
+            persist: 2,
+            cred_type: 1,
+        };
+
+        with_test_home(|home| {
+            // 文件：过期（agy 不会更新它）
+            let dir = home.join(".gemini").join("antigravity-cli");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("antigravity-oauth-token"),
+                json!({ "access_token": "at-file-stale", "expiry": "2020-01-01T00:00:00Z" })
+                    .to_string(),
+            )
+            .unwrap();
+
+            // keyring：新鲜 → 取 keyring
+            let keyring = snapshot(json!({
+                "token": { "access_token": "at-keyring", "expiry": "2999-01-01T00:00:00+00:00" },
+                "auth_method": "consumer"
+            }));
+            match agy_token_state(|| Ok(vec![keyring.clone()])) {
+                AgyTokenState::Usable(token) => assert_eq!(token.token, "at-keyring"),
+                other => panic!("expected usable keyring token, got {other:?}"),
+            }
+
+            // keyring 也过期 → Expired（仍带回最近的一枚）
+            let stale_keyring = snapshot(json!({
+                "token": { "access_token": "at-keyring-stale", "expiry": "2021-01-01T00:00:00+00:00" }
+            }));
+            match agy_token_state(|| Ok(vec![stale_keyring.clone()])) {
+                AgyTokenState::Expired { token, .. } => {
+                    assert_eq!(token.token, "at-keyring-stale")
+                }
+                other => panic!("expected expired, got {other:?}"),
+            }
+
+            // keyring 条目解析不出 access_token、文件又只有过期 token →
+            // 仍报 Expired（先让用户去重新登录），但诊断信息要一并带回
+            let broken = snapshot(json!({ "token": { "token_type": "Bearer" } }));
+            match agy_token_state(|| Ok(vec![broken.clone()])) {
+                AgyTokenState::Expired { token, diagnostic } => {
+                    assert_eq!(token.token, "at-file-stale");
+                    assert!(diagnostic.unwrap_or_default().contains("access_token"));
+                }
+                other => panic!("expected expired with diagnostic, got {other:?}"),
+            }
+
+            // 两处都没有 → Missing 且没有诊断（= 没登录）
+            std::fs::remove_file(dir.join("antigravity-oauth-token")).unwrap();
+            match agy_token_state(|| Ok(Vec::new())) {
+                AgyTokenState::Missing { diagnostic } => assert!(diagnostic.is_none()),
+                other => panic!("expected missing without diagnostic, got {other:?}"),
+            }
+
+            // keyring 解析不出来、文件也没了 → Missing + 诊断（= 凭据损坏，不是"没登录"）
+            match agy_token_state(|| Ok(vec![broken.clone()])) {
+                AgyTokenState::Missing { diagnostic } => {
+                    assert!(diagnostic.unwrap_or_default().contains("access_token"));
+                }
+                other => panic!("expected missing with diagnostic, got {other:?}"),
+            }
         });
     }
 }

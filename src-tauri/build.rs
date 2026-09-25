@@ -34,9 +34,7 @@ fn main() {
     #[cfg(all(target_os = "windows", target_env = "gnu"))]
     {
         if let Err(err) = embed_common_controls_manifest_for_tests() {
-            println!(
-                "cargo:warning=嵌入测试 manifest 失败（cargo test 可能无法启动）: {err}"
-            );
+            println!("cargo:warning=嵌入测试 manifest 失败（cargo test 可能无法启动）: {err}");
         }
     }
 }

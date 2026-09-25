@@ -103,5 +103,7 @@ fn load_valid_v2_config_succeeds() {
     assert!(loaded
         .get_manager(&ogg_switch_lib::AppType::Claude)
         .is_some());
-    assert!(loaded.get_manager(&ogg_switch_lib::AppType::Codex).is_some());
+    assert!(loaded
+        .get_manager(&ogg_switch_lib::AppType::Codex)
+        .is_some());
 }

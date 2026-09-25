@@ -30,12 +30,17 @@ import { ompApi } from "@/lib/api";
 type OmpProviderFormProps = Omit<ProviderFormProps, "appId">;
 
 /**
- * OMP 的供应商只分两类，与 omp 实际能力对齐：
- * - official：OAuth 登录（凭据在 omp 凭据库，无需 baseUrl / apiKey / 模型）
- * - aggregator：API Key（官方 API、聚合站、中转站、本地推理，统一走 baseUrl + apiKey）
+ * OMP 的供应商分组（预设选择器三组 + 自定义入口），category 状态沿用通用
+ * ProviderCategory：
+ * - official：OAuth 登录（omp 内置，凭据在 omp 凭据库，无需 baseUrl / apiKey）
+ * - aggregator：API Key（omp 内置：官方 API、聚合站、中转站、本地推理）
+ * - third_party：常见供应商（OGG 增补预设，不在 omp 官方 providers.md 清单内，
+ *   如腾讯混元、豆包、one-api/new-api 模板）——落库为 `common`
+ * - custom：自定义（选择器「自定义」入口）——落库为 `custom`
  */
 const OMP_OAUTH_CATEGORY = "official";
 const OMP_API_KEY_CATEGORY = "aggregator";
+const OMP_COMMON_CATEGORY = "third_party";
 
 /**
  * loopback 地址判定（与后端 `infer_type` 同一口径）：本地推理服务不需要密钥，
@@ -211,7 +216,11 @@ export function OmpProviderForm({
           websiteUrl: preset.websiteUrl,
           settingsConfig: {},
           category:
-            preset.type === "oauth" ? OMP_OAUTH_CATEGORY : OMP_API_KEY_CATEGORY,
+            preset.type === "oauth"
+              ? OMP_OAUTH_CATEGORY
+              : preset.tier === "common"
+                ? OMP_COMMON_CATEGORY
+                : OMP_API_KEY_CATEGORY,
           icon: preset.icon,
         } as AnyPreset,
       })),
@@ -224,7 +233,7 @@ export function OmpProviderForm({
     [selectedPresetId],
   );
 
-  // 预设分组与悬浮标签共用同一份文案：只有 OAuth 与 API Key 两类
+  // 预设分组与悬浮标签共用同一份文案：OAuth / API Key（内置）/ 常见供应商
   const presetGroups = useMemo(
     () => [
       {
@@ -233,9 +242,11 @@ export function OmpProviderForm({
       },
       {
         category: OMP_API_KEY_CATEGORY,
-        label: t("omp.groupApiKey", {
-          defaultValue: "API Key（官方 / 聚合站 / 中转站 / 本地）",
-        }),
+        label: t("omp.groupApiKey", { defaultValue: "API Key（omp 内置）" }),
+      },
+      {
+        category: OMP_COMMON_CATEGORY,
+        label: t("omp.groupCommon", { defaultValue: "常见供应商" }),
       },
     ],
     [t],
@@ -273,9 +284,13 @@ export function OmpProviderForm({
     form.setValue("websiteUrl", preset.websiteUrl);
     // 预设品牌图标随预设带入（持久化到 OGG meta store，见 omp.rs）
     form.setValue("icon", preset.icon ?? "");
-    // 只有两种：OAuth（omp 内置登录）与 API Key（含聚合站 / 中转站 / 本地）
+    // 只有两种认证：OAuth（omp 内置登录）与 API Key（内置 / 常见供应商 / 本地）
     setCategory(
-      preset.type === "oauth" ? OMP_OAUTH_CATEGORY : OMP_API_KEY_CATEGORY,
+      preset.type === "oauth"
+        ? OMP_OAUTH_CATEGORY
+        : preset.tier === "common"
+          ? OMP_COMMON_CATEGORY
+          : OMP_API_KEY_CATEGORY,
     );
     setProviderType(preset.type === "oauth" ? "oauth" : "api-key");
     if (preset.type === "oauth" && preset.oauthProviderId) {
@@ -358,11 +373,20 @@ export function OmpProviderForm({
             authHeader,
           };
         }
+        // category 状态承载分层：常见供应商预设 → common，自定义入口 → custom，
+        // 其余（内置 API Key 预设 / 无预设来源）→ api。编辑态该状态来自既有
+        // 条目的通用 category 映射，保存后原样保真。
+        const ompCategory =
+          category === OMP_COMMON_CATEGORY
+            ? "common"
+            : category === "custom"
+              ? "custom"
+              : "api";
         return {
           id,
           name,
           type: "api-key",
-          category: "api",
+          category: ompCategory,
           description,
           websiteUrl,
           icon,

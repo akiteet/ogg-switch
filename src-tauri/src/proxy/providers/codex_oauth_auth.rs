@@ -72,39 +72,62 @@ const CODEX_USER_AGENT: &str = "cc-switch-codex-oauth";
 pub(crate) const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
 pub(crate) const CODEX_OAUTH_CLIENT_VERSION: &str = "0.153.4";
 
-/// Codex OAuth 错误
-#[derive(Debug, thiserror::Error)]
+/// Codex OAuth 错误（手写 Display 以按设置语言输出）
+#[derive(Debug)]
 pub enum CodexOAuthError {
-    #[error("等待用户授权中")]
     AuthorizationPending,
-
-    #[error("用户拒绝授权")]
     AccessDenied,
-
-    #[error("Device Code 已过期")]
     ExpiredToken,
-
-    #[error("OAuth Token 获取失败: {0}")]
     TokenFetchFailed(String),
-
-    #[error("codex_oauth_duplicate_account")]
     DuplicateAccount,
-
-    #[error("Refresh Token 失效或已过期")]
     RefreshTokenInvalid,
-
-    #[error("网络错误: {0}")]
     NetworkError(String),
-
-    #[error("解析错误: {0}")]
     ParseError(String),
-
-    #[error("IO 错误: {0}")]
     IoError(String),
-
-    #[error("账号不存在: {0}")]
     AccountNotFound(String),
 }
+
+impl std::fmt::Display for CodexOAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CodexOAuthError::AuthorizationPending => {
+                crate::error::pick("等待用户授权中", "Waiting for user authorization")
+            }
+            CodexOAuthError::AccessDenied => {
+                crate::error::pick("用户拒绝授权", "User denied authorization")
+            }
+            CodexOAuthError::ExpiredToken => {
+                crate::error::pick("Device Code 已过期", "Device code has expired")
+            }
+            CodexOAuthError::TokenFetchFailed(d) => crate::error::pick(
+                &format!("OAuth Token 获取失败: {d}"),
+                &format!("Failed to fetch OAuth token: {d}"),
+            ),
+            // 前端按此错误码去重的语义锚点，不能翻译
+            CodexOAuthError::DuplicateAccount => "codex_oauth_duplicate_account".to_string(),
+            CodexOAuthError::RefreshTokenInvalid => crate::error::pick(
+                "Refresh Token 失效或已过期",
+                "Refresh token is invalid or expired",
+            ),
+            CodexOAuthError::NetworkError(d) => {
+                crate::error::pick(&format!("网络错误: {d}"), &format!("Network error: {d}"))
+            }
+            CodexOAuthError::ParseError(d) => {
+                crate::error::pick(&format!("解析错误: {d}"), &format!("Parse error: {d}"))
+            }
+            CodexOAuthError::IoError(d) => {
+                crate::error::pick(&format!("IO 错误: {d}"), &format!("IO error: {d}"))
+            }
+            CodexOAuthError::AccountNotFound(d) => crate::error::pick(
+                &format!("账号不存在: {d}"),
+                &format!("Account not found: {d}"),
+            ),
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl std::error::Error for CodexOAuthError {}
 
 impl From<reqwest::Error> for CodexOAuthError {
     fn from(err: reqwest::Error) -> Self {

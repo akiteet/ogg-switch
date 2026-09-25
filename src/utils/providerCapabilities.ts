@@ -15,6 +15,26 @@ export const CODEX_OFFICIAL_PROVIDER_ID = "codex-official";
 export const GROKBUILD_OFFICIAL_PROVIDER_ID = "grokbuild-official";
 export const ANTIGRAVITY_OFFICIAL_PROVIDER_ID = "antigravity-official";
 
+/**
+ * 支持「官方订阅额度」的 app —— 即后端 `get_subscription_quota` 里有对应分支的 app。
+ *
+ * **单一真源**：`ProviderCard`（官方卡片是否挂载额度 footer）、
+ * `lib/query/subscription.ts`（hook 的 `enabled`）、`UsageScriptModal`（官方订阅模板
+ * 是否可选）都读这一份。历史上这三处各写一份同样的白名单，加新 app 时漏改任何一处
+ * 的表现都是「该 app 的额度永远不显示、且没有任何报错」——Antigravity 正是这样在
+ * v1.1.0 加入后一直漏配整条链路。后端 match 分支仍以 Rust 侧为准，改这里时同步加。
+ */
+export const OFFICIAL_SUBSCRIPTION_APPS: AppId[] = [
+  "claude",
+  "codex",
+  "gemini",
+  "grokbuild",
+  "antigravity",
+];
+
+export const supportsOfficialSubscriptionQuota = (appId: AppId): boolean =>
+  OFFICIAL_SUBSCRIPTION_APPS.includes(appId);
+
 export type CodexOfficialIdentity =
   | "native_login"
   | "managed_account"

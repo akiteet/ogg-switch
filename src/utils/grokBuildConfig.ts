@@ -1,3 +1,4 @@
+import i18n from "@/i18n";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
 export const GROK_BUILD_DEFAULT_MODEL = "grok-4.6";
@@ -327,21 +328,23 @@ export function validateGrokModelEntries(
   data: GrokModelEntries,
   supplier: { baseUrl: string; apiKey: string },
 ): string | null {
-  if (!supplier.baseUrl.trim()) return "Base URL 不能为空";
-  if (!supplier.apiKey.trim()) return "API Key 不能为空";
-  if (!data.entries.length) return "至少需要一个模型条目";
+  if (!supplier.baseUrl.trim()) return i18n.t("grokBuild.validation.baseUrlRequired");
+  if (!supplier.apiKey.trim()) return i18n.t("grokBuild.validation.apiKeyRequired");
+  if (!data.entries.length) return i18n.t("grokBuild.validation.atLeastOneEntry");
   const seen = new Set<string>();
   for (const entry of data.entries) {
     const id = entry.id.trim();
-    if (!id) return "模型 ID 不能为空";
-    if (seen.has(id)) return `模型 ID 重复: ${id}`;
+    if (!id) return i18n.t("grokBuild.validation.modelIdRequired");
+    if (seen.has(id)) return i18n.t("grokBuild.validation.modelIdDuplicate", { id });
     seen.add(id);
     if (!Number.isInteger(entry.contextWindow) || entry.contextWindow <= 0) {
-      return `模型 ${id} 的上下文窗口必须是正整数`;
+      return i18n.t("grokBuild.validation.contextWindowPositive", { id });
     }
   }
   if (data.defaultKey && !data.entries.some((e) => e.id.trim() === data.defaultKey)) {
-    return `默认模型 ${data.defaultKey} 不在条目列表里`;
+    return i18n.t("grokBuild.validation.defaultKeyNotInEntries", {
+      key: data.defaultKey,
+    });
   }
   return null;
 }

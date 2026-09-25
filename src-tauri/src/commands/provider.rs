@@ -603,12 +603,26 @@ async fn query_provider_usage_inner(
     app_type: AppType,
     provider_id: &str,
 ) -> Result<crate::provider::UsageResult, String> {
-    // 从数据库读取供应商信息，检查特殊模板类型
-    let providers = state
-        .db
-        .get_all_providers(app_type.as_str())
-        .map_err(|e| format!("Failed to get providers: {e}"))?;
-    let provider = providers.get(provider_id);
+    // 从数据库读取供应商信息，检查特殊模板类型。
+    //
+    // **OMP 例外（v1.1.3 修复）**：OMP 供应商不在 SQLite（models.yml + meta store 才是
+    // 真源），直接 `get_all_providers("omp")` 必然得到 None → `template_type` 退化成
+    // 空串 → 所有原生模板分支（balance/token_plan/official_subscription/copilot）全被
+    // 跳过 → 空脚本的 balance 模板被当通用脚本执行而报"解析配置失败"。实测踩坑
+    // （2026-09-24，DeepSeek balance 模板：弹窗测试成功、卡片查询失败）。这里先用 OMP
+    // 专道解析，让模板路由与其它 app 对齐。
+    let provider = if app_type == AppType::Omp {
+        crate::commands::find_omp_usage_provider(provider_id)
+            .await
+            .ok()
+    } else {
+        let providers = state
+            .db
+            .get_all_providers(app_type.as_str())
+            .map_err(|e| format!("Failed to get providers: {e}"))?;
+        providers.get(provider_id).cloned()
+    };
+    let provider = provider.as_ref();
     let usage_script = provider
         .and_then(|p| p.meta.as_ref())
         .and_then(|m| m.usage_script.as_ref());

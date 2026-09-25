@@ -103,7 +103,11 @@ export const useAddProviderMutation = (appId: AppId) => {
       if (appId === "omp") {
         const ompProvider = extractOmpProvider(rest.settingsConfig);
         if (!ompProvider) {
-          throw new Error("Oh My Pi 供应商配置解析失败");
+          throw new Error(
+            t("omp.providerConfigMissing", {
+              defaultValue: "供应商配置解析失败，无法添加到配置",
+            }),
+          );
         }
         await ompApi.saveOmpProvider(ompProvider);
         return {
